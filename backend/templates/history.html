@@ -1,0 +1,42 @@
+{% extends "base.html" %}
+
+{% block title %}History - StrideOptics{% endblock %}
+
+{% block content %}
+<div class="history-container">
+    <h1>Analysis History</h1>
+    
+    {% if analyses %}
+    <div class="history-list">
+        {% for analysis in analyses %}
+        <div class="history-item">
+            <div class="history-info">
+                <h3>{{ analysis.original_filename }}</h3>
+                <p class="history-date">{{ analysis.upload_date[:19] }}</p>
+            </div>
+            <div class="history-status">
+                {% if analysis.status == 'complete' %}
+                    <span class="status-badge status-complete">Complete</span>
+                    <a href="{{ url_for('results', id=analysis.id) }}" class="btn btn-sm btn-primary">View Results</a>
+                {% elif analysis.status == 'processing' %}
+                    <span class="status-badge status-processing">Processing</span>
+                    <a href="{{ url_for('results', id=analysis.id) }}" class="btn btn-sm btn-secondary">View Progress</a>
+                {% elif analysis.status == 'pending' %}
+                    <span class="status-badge status-pending">Pending</span>
+                    <a href="{{ url_for('results', id=analysis.id) }}" class="btn btn-sm btn-secondary">View</a>
+                {% elif analysis.status == 'error' %}
+                    <span class="status-badge status-error">Error</span>
+                    <a href="{{ url_for('results', id=analysis.id) }}" class="btn btn-sm btn-secondary">View Details</a>
+                {% endif %}
+            </div>
+        </div>
+        {% endfor %}
+    </div>
+    {% else %}
+    <div class="empty-state">
+        <p>No analyses yet. <a href="{{ url_for('index') }}">Upload your first video</a> to get started!</p>
+    </div>
+    {% endif %}
+</div>
+{% endblock %}
+

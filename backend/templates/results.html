@@ -1,0 +1,168 @@
+{% extends "base.html" %}
+
+{% block title %}Results - StrideOptics{% endblock %}
+
+{% block content %}
+<div class="results-container">
+    {% if analysis.status == 'pending' or analysis.status == 'processing' %}
+        <div class="processing-state">
+            <div class="spinner"></div>
+            <h2>Analyzing Your Video...</h2>
+            <p>This may take a few moments. Please don't close this page.</p>
+            <div class="progress-bar-container">
+                <div class="progress-bar" id="progress-bar" style="width: {{ analysis.progress }}%"></div>
+            </div>
+            <p class="progress-text">Progress: <span id="progress-text">{{ analysis.progress }}%</span></p>
+        </div>
+    {% elif analysis.status == 'error' %}
+        <div class="error-state">
+            <h2>Analysis Error</h2>
+            <p>{{ analysis.error_message }}</p>
+            <a href="{{ url_for('index') }}" class="btn btn-primary">Try Again</a>
+        </div>
+    {% elif analysis.status == 'complete' and result %}
+        <div class="results-content">
+            <h1>Analysis Results</h1>
+            <p class="result-meta">Analyzed on {{ analysis.upload_date[:10] }} | Video: {{ analysis.original_filename }}</p>
+
+            <div class="results-grid">
+                <!-- Left Leg Analysis -->
+                {% if result.left_leg %}
+                <div class="leg-analysis left-leg">
+                    <h2>Left Leg</h2>
+                    <div class="angle-display">
+                        <div class="angle-value">{{ "%.1f"|format(result.left_leg.angles.min) }}°</div>
+                        <div class="angle-label">Minimum Angle</div>
+                    </div>
+                    <div class="pattern-badge pattern-{{ result.left_leg.pattern|lower|replace(' ', '-') }}">
+                        {{ result.left_leg.pattern }}
+                    </div>
+                    <div class="leg-stats">
+                        <div class="stat">
+                            <span class="stat-label">Average:</span>
+                            <span class="stat-value">{{ "%.1f"|format(result.left_leg.angles.avg) }}°</span>
+                        </div>
+                        <div class="stat">
+                            <span class="stat-label">Maximum:</span>
+                            <span class="stat-value">{{ "%.1f"|format(result.left_leg.angles.max) }}°</span>
+                        </div>
+                    </div>
+                    {% if result.left_leg.warning %}
+                    <div class="warning-badge">⚠️ Abnormal Pattern Detected</div>
+                    {% endif %}
+                </div>
+                {% endif %}
+
+                <!-- Right Leg Analysis -->
+                {% if result.right_leg %}
+                <div class="leg-analysis right-leg">
+                    <h2>Right Leg</h2>
+                    <div class="angle-display">
+                        <div class="angle-value">{{ "%.1f"|format(result.right_leg.angles.min) }}°</div>
+                        <div class="angle-label">Minimum Angle</div>
+                    </div>
+                    <div class="pattern-badge pattern-{{ result.right_leg.pattern|lower|replace(' ', '-') }}">
+                        {{ result.right_leg.pattern }}
+                    </div>
+                    <div class="leg-stats">
+                        <div class="stat">
+                            <span class="stat-label">Average:</span>
+                            <span class="stat-value">{{ "%.1f"|format(result.right_leg.angles.avg) }}°</span>
+                        </div>
+                        <div class="stat">
+                            <span class="stat-label">Maximum:</span>
+                            <span class="stat-value">{{ "%.1f"|format(result.right_leg.angles.max) }}°</span>
+                        </div>
+                    </div>
+                    {% if result.right_leg.warning %}
+                    <div class="warning-badge">⚠️ Abnormal Pattern Detected</div>
+                    {% endif %}
+                </div>
+                {% endif %}
+            </div>
+
+            <!-- Asymmetry Warning -->
+            {% if result.asymmetry_detected %}
+            <div class="asymmetry-alert">
+                <h3>⚠️ Asymmetry Detected</h3>
+                <p>Significant difference detected between left and right leg patterns:</p>
+                <ul>
+                    <li><strong>Left:</strong> {{ result.left_leg.pattern if result.left_leg else 'N/A' }}</li>
+                    <li><strong>Right:</strong> {{ result.right_leg.pattern if result.right_leg else 'N/A' }}</li>
+                </ul>
+                <p class="recommendation-note">Consider consulting a podiatrist for custom orthotics.</p>
+            </div>
+            {% endif %}
+
+            <!-- Shoe Recommendation -->
+            {% if result.recommendation %}
+            <div class="recommendation-section">
+                <h2>Recommended Shoe Type</h2>
+                <div class="recommendation-card">
+                    <h3>{{ result.recommendation.type }}</h3>
+                    <p>{{ result.recommendation.description }}</p>
+                    {% if result.recommendation.examples %}
+                    <div class="shoe-examples">
+                        <h4>Recommended Models:</h4>
+                        <ul>
+                            {% for example in result.recommendation.examples %}
+                            <li>{{ example }}</li>
+                            {% endfor %}
+                        </ul>
+                    </div>
+                    {% endif %}
+                </div>
+            </div>
+            {% endif %}
+
+            <!-- Analysis Metadata -->
+            <div class="metadata">
+                <p><strong>Total Frames:</strong> {{ result.total_frames }}</p>
+                <p><strong>Frames Analyzed:</strong> {{ result.frames_analyzed }}</p>
+            </div>
+
+            <div class="actions">
+                <a href="{{ url_for('index') }}" class="btn btn-primary">Analyze Another Video</a>
+                <a href="{{ url_for('history') }}" class="btn btn-secondary">View History</a>
+            </div>
+        </div>
+    {% else %}
+        <div class="no-results">
+            <h2>No Results Available</h2>
+            <p>The analysis is still processing or encountered an error.</p>
+            <a href="{{ url_for('index') }}" class="btn btn-primary">Go Back</a>
+        </div>
+    {% endif %}
+</div>
+
+{% if analysis.status == 'pending' or analysis.status == 'processing' %}
+<script>
+    const analysisId = {{ analysis.id }};
+    const statusUrl = "{{ url_for('analyze_status', id=analysis.id) }}";
+    
+    function checkStatus() {
+        fetch(statusUrl)
+            .then(response => response.json())
+            .then(data => {
+                document.getElementById('progress-bar').style.width = data.progress + '%';
+                document.getElementById('progress-text').textContent = data.progress + '%';
+                
+                if (data.status === 'complete') {
+                    window.location.reload();
+                } else if (data.status === 'error') {
+                    window.location.reload();
+                } else {
+                    setTimeout(checkStatus, 2000);
+                }
+            })
+            .catch(error => {
+                console.error('Error checking status:', error);
+                setTimeout(checkStatus, 2000);
+            });
+    }
+    
+    checkStatus();
+</script>
+{% endif %}
+{% endblock %}
+

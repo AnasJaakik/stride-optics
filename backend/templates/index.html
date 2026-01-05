@@ -1,0 +1,61 @@
+{% extends "base.html" %}
+
+{% block title %}Upload Video - StrideOptics{% endblock %}
+
+{% block content %}
+<div class="upload-container">
+    <h1>Analyze Your Running Gait</h1>
+    <p class="subtitle">Upload a video of yourself running to get personalized shoe recommendations</p>
+
+    <form id="upload-form" method="POST" action="{{ url_for('upload_file') }}" enctype="multipart/form-data">
+        <div class="upload-area" id="upload-area">
+            <input type="file" id="file-input" name="file" accept="video/*" required>
+            <div class="upload-content">
+                <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                    <polyline points="17 8 12 3 7 8"></polyline>
+                    <line x1="12" y1="3" x2="12" y2="15"></line>
+                </svg>
+                <h3>Drag & drop your video here</h3>
+                <p>or click to browse</p>
+                <p class="file-info">Supported formats: MP4, AVI, MOV, MKV, WEBM, FLV (Max 500MB)</p>
+            </div>
+        </div>
+        <div id="file-preview" class="file-preview" style="display: none;">
+            <div class="file-info-display">
+                <span id="file-name"></span>
+                <button type="button" id="remove-file" class="btn-remove">Remove</button>
+            </div>
+        </div>
+        <button type="submit" id="submit-btn" class="btn btn-primary" style="display: none;">
+            Analyze Video
+        </button>
+    </form>
+
+    <div class="info-section">
+        <h2>How it works</h2>
+        <div class="steps">
+            <div class="step">
+                <div class="step-number">1</div>
+                <h3>Upload Video</h3>
+                <p>Record yourself running from the side view. Make sure both legs are visible.</p>
+            </div>
+            <div class="step">
+                <div class="step-number">2</div>
+                <h3>AI Analysis</h3>
+                <p>Our AI analyzes your gait pattern, measuring ankle angles and foot strike.</p>
+            </div>
+            <div class="step">
+                <div class="step-number">3</div>
+                <h3>Get Recommendations</h3>
+                <p>Receive personalized shoe recommendations based on your running style.</p>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ url_for('static', filename='js/main.js') }}"></script>
+{% endblock %}
+

@@ -1,0 +1,258 @@
+"""
+Gait Analysis Module
+Extracts core analysis logic from engine.py for use in web application
+"""
+import cv2
+import mediapipe as mp
+import numpy as np
+from typing import Dict, List, Optional, Callable
+
+# Gait pattern thresholds (in degrees)
+SEVERE_OVERPRONATION_THRESHOLD = 150
+OVERPRONATION_THRESHOLD = 170
+NEUTRAL_MAX = 190
+SUPINATION_THRESHOLD = 210
+
+# Initialize MediaPipe Pose (reusable instance)
+mp_pose = mp.solutions.pose
+_pose_instance = None
+
+def get_pose_instance():
+    """Get or create MediaPipe Pose instance"""
+    global _pose_instance
+    if _pose_instance is None:
+        _pose_instance = mp_pose.Pose(
+            min_detection_confidence=0.3,
+            min_tracking_confidence=0.3,
+            model_complexity=1
+        )
+    return _pose_instance
+
+def enhance_contrast(img):
+    """
+    Applies CLAHE (Contrast Limited Adaptive Histogram Equalization).
+    This helps the AI see 'black shoes on black treadmill'.
+    """
+    lab = cv2.cvtColor(img, cv2.COLOR_BGR2LAB)
+    l, a, b = cv2.split(lab)
+    clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
+    cl = clahe.apply(l)
+    limg = cv2.merge((cl, a, b))
+    enhanced = cv2.cvtColor(limg, cv2.COLOR_LAB2BGR)
+    return enhanced
+
+def calculate_angle(a, b, c):
+    """Calculate angle between three points"""
+    a = np.array(a)
+    b = np.array(b)
+    c = np.array(c)
+    radians = np.arctan2(c[1] - b[1], c[0] - b[0]) - np.arctan2(a[1] - b[1], a[0] - b[0])
+    angle = np.abs(radians * 180.0 / np.pi)
+    if angle > 180.0:
+        angle = 360 - angle
+    return angle
+
+def classify_gait_pattern(angle):
+    """
+    Classifies gait pattern based on ankle angle.
+    Returns: (pattern_name, severity_level)
+    """
+    if angle < SEVERE_OVERPRONATION_THRESHOLD:
+        return ("SEVERE OVERPRONATION", 4)
+    elif angle < OVERPRONATION_THRESHOLD:
+        return ("OVERPRONATION", 3)
+    elif angle <= NEUTRAL_MAX:
+        return ("NEUTRAL", 1)
+    elif angle <= SUPINATION_THRESHOLD:
+        return ("SUPINATION", 2)
+    else:
+        return ("SEVERE SUPINATION", 4)
+
+def get_shoe_recommendation(pattern):
+    """Returns shoe recommendation based on gait pattern"""
+    if "SEVERE OVERPRONATION" in pattern:
+        return {
+            "type": "Maximum Stability Shoes",
+            "examples": ["Brooks Beast", "Asics Gel-Kayano", "New Balance 1340v3"],
+            "description": "These shoes provide maximum support and motion control for severe overpronation."
+        }
+    elif "OVERPRONATION" in pattern:
+        return {
+            "type": "Stability Shoes",
+            "examples": ["Brooks Adrenaline", "Asics GT-2000", "Saucony Guide"],
+            "description": "Stability shoes help control excessive inward rolling of the foot."
+        }
+    elif "NEUTRAL" in pattern:
+        return {
+            "type": "Neutral Cushioned Shoes",
+            "examples": ["Brooks Ghost", "Nike Pegasus", "Asics Gel-Nimbus"],
+            "description": "Neutral shoes provide cushioning without extra stability features."
+        }
+    elif "SUPINATION" in pattern:
+        return {
+            "type": "Neutral Cushioned Shoes with Extra Padding",
+            "examples": ["Brooks Glycerin", "Hoka Clifton", "Asics Gel-Cumulus"],
+            "description": "Extra cushioning helps absorb impact for supinated feet."
+        }
+    elif "SEVERE SUPINATION" in pattern:
+        return {
+            "type": "Maximum Cushioning Shoes",
+            "examples": ["Hoka Bondi", "Brooks Glycerin", "Asics Gel-Nimbus"],
+            "description": "Maximum cushioning provides superior shock absorption."
+        }
+    return {
+        "type": "Consult a podiatrist",
+        "examples": [],
+        "description": "Professional assessment recommended for your specific needs."
+    }
+
+def analyze_video(video_path: str, progress_callback: Optional[Callable[[int, int], None]] = None) -> Dict:
+    """
+    Analyze a video file for gait patterns.
+    
+    Args:
+        video_path: Path to the video file
+        progress_callback: Optional callback function(processed_frames, total_frames)
+    
+    Returns:
+        Dictionary containing analysis results
+    """
+    pose = get_pose_instance()
+    left_angles = []
+    right_angles = []
+    frame_count = 0
+    
+    cap = cv2.VideoCapture(video_path)
+    
+    if not cap.isOpened():
+        raise ValueError(f"Could not open video file: {video_path}")
+    
+    # Get total frame count for progress tracking
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    
+    while cap.isOpened():
+        ret, frame = cap.read()
+        if not ret:
+            break
+        
+        frame_count += 1
+        
+        # Update progress
+        if progress_callback and total_frames > 0:
+            progress_callback(frame_count, total_frames)
+        
+        # Enhance contrast for better detection
+        ai_frame = enhance_contrast(frame)
+        image_rgb = cv2.cvtColor(ai_frame, cv2.COLOR_BGR2RGB)
+        
+        results = pose.process(image_rgb)
+        frame_height, frame_width, _ = frame.shape
+        
+        if results.pose_landmarks:
+            landmarks = results.pose_landmarks.landmark
+            
+            # LEFT LEG
+            try:
+                l_knee = [landmarks[25].x, landmarks[25].y]
+                l_ankle = [landmarks[27].x, landmarks[27].y]
+                l_heel = [landmarks[29].x, landmarks[29].y]
+                
+                if landmarks[27].visibility > 0.5:
+                    raw_angle_l = calculate_angle(l_knee, l_ankle, l_heel)
+                    if raw_angle_l > 140:
+                        left_angles.append(raw_angle_l)
+            except:
+                pass
+            
+            # RIGHT LEG
+            try:
+                r_knee = [landmarks[26].x, landmarks[26].y]
+                r_ankle = [landmarks[28].x, landmarks[28].y]
+                r_heel = [landmarks[30].x, landmarks[30].y]
+                
+                if landmarks[28].visibility > 0.5:
+                    raw_angle_r = calculate_angle(r_knee, r_ankle, r_heel)
+                    if raw_angle_r > 140:
+                        right_angles.append(raw_angle_r)
+            except:
+                pass
+    
+    cap.release()
+    
+    # Process results
+    result = {
+        "left_leg": None,
+        "right_leg": None,
+        "recommendation": None,
+        "asymmetry_detected": False,
+        "total_frames": frame_count,
+        "frames_analyzed": len(left_angles) + len(right_angles)
+    }
+    
+    # Analyze left leg
+    if left_angles:
+        min_angle_l = min(left_angles)
+        max_angle_l = max(left_angles)
+        avg_angle_l = sum(left_angles) / len(left_angles)
+        pattern_l, severity_l = classify_gait_pattern(min_angle_l)
+        
+        result["left_leg"] = {
+            "angles": {
+                "min": float(min_angle_l),
+                "max": float(max_angle_l),
+                "avg": float(avg_angle_l),
+                "all": [float(a) for a in left_angles]
+            },
+            "pattern": pattern_l,
+            "severity": severity_l,
+            "warning": severity_l >= 3
+        }
+    
+    # Analyze right leg
+    if right_angles:
+        min_angle_r = min(right_angles)
+        max_angle_r = max(right_angles)
+        avg_angle_r = sum(right_angles) / len(right_angles)
+        pattern_r, severity_r = classify_gait_pattern(min_angle_r)
+        
+        result["right_leg"] = {
+            "angles": {
+                "min": float(min_angle_r),
+                "max": float(max_angle_r),
+                "avg": float(avg_angle_r),
+                "all": [float(a) for a in right_angles]
+            },
+            "pattern": pattern_r,
+            "severity": severity_r,
+            "warning": severity_r >= 3
+        }
+    
+    # Determine recommendation
+    if left_angles and right_angles:
+        # Use the more severe pattern for recommendation
+        if severity_l >= severity_r:
+            result["recommendation"] = get_shoe_recommendation(pattern_l)
+        else:
+            result["recommendation"] = get_shoe_recommendation(pattern_r)
+        
+        # Check for asymmetry
+        if abs(severity_l - severity_r) >= 2:
+            result["asymmetry_detected"] = True
+            result["asymmetry_details"] = {
+                "left_pattern": pattern_l,
+                "right_pattern": pattern_r,
+                "severity_difference": abs(severity_l - severity_r)
+            }
+    elif left_angles:
+        result["recommendation"] = get_shoe_recommendation(pattern_l)
+    elif right_angles:
+        result["recommendation"] = get_shoe_recommendation(pattern_r)
+    else:
+        result["recommendation"] = {
+            "type": "Unable to determine",
+            "examples": [],
+            "description": "Insufficient data collected. Please ensure the video clearly shows both legs while running."
+        }
+    
+    return result
+
