@@ -12,11 +12,15 @@ SECRET_KEY = os.environ.get('SECRET_KEY', 'dev-secret-key-change-in-production')
 DEBUG = os.environ.get('FLASK_DEBUG', 'True').lower() == 'true'
 
 # Database configuration
-DATABASE_PATH = BASE_DIR / 'gait_analysis.db'
-DATABASE_URL = f'sqlite:///{DATABASE_PATH}'
+# Use /tmp for Vercel serverless, or project directory for local
+if os.environ.get('VERCEL'):
+    DATABASE_PATH = Path('/tmp/gait_analysis.db')
+    UPLOAD_FOLDER = Path('/tmp/uploads')
+else:
+    DATABASE_PATH = BASE_DIR / 'gait_analysis.db'
+    UPLOAD_FOLDER = BASE_DIR / 'backend' / 'uploads'
 
-# Upload configuration
-UPLOAD_FOLDER = BASE_DIR / 'backend' / 'uploads'
+DATABASE_URL = f'sqlite:///{DATABASE_PATH}'
 UPLOAD_FOLDER.mkdir(parents=True, exist_ok=True)
 MAX_CONTENT_LENGTH = 500 * 1024 * 1024  # 500MB max file size
 ALLOWED_EXTENSIONS = {'mp4', 'avi', 'mov', 'mkv', 'webm', 'flv'}

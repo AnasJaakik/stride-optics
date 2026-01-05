@@ -40,3 +40,5 @@ instance/
 .env
 .env.local
 
+# Vercel
+.vercel

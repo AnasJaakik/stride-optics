@@ -17,7 +17,10 @@ from config import (
 from models import init_db, get_session, Analysis, Result
 from gait_analyzer import analyze_video
 
-app = Flask(__name__)
+app = Flask(__name__, 
+            static_folder='static',
+            static_url_path='/static',
+            template_folder='templates')
 app.config['SECRET_KEY'] = SECRET_KEY
 app.config['MAX_CONTENT_LENGTH'] = MAX_CONTENT_LENGTH
 app.config['UPLOAD_FOLDER'] = str(UPLOAD_FOLDER)
