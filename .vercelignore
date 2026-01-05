@@ -13,4 +13,16 @@ samples/
 .env
 *.log
 gait_analysis.db
-
+*.mp4
+*.avi
+*.mov
+*.mkv
+*.webm
+*.flv
+backend/engine.py
+README.md
+README_VERCEL.md
+DEPLOY.md
+run.sh
+.vercel
+frontend/
