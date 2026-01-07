@@ -82,9 +82,13 @@ class Result(Base):
         }
 
 # Database setup
-def init_db(db_path='sqlite:///gait_analysis.db'):
+def init_db(db_url='sqlite:///gait_analysis.db'):
     """Initialize database and create tables"""
-    engine = create_engine(db_path, echo=False)
+    # Handle PostgreSQL URLs from Railway (postgres:// -> postgresql://)
+    if db_url and db_url.startswith('postgres://'):
+        db_url = db_url.replace('postgres://', 'postgresql://', 1)
+    
+    engine = create_engine(db_url, echo=False)
     Base.metadata.create_all(engine)
     return engine
 

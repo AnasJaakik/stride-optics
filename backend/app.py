@@ -2,6 +2,11 @@
 Flask Web Application for Gait Analysis
 """
 import os
+# Set environment variables BEFORE any OpenCV/MediaPipe imports
+os.environ.setdefault('OPENCV_IO_ENABLE_OPENEXR', '0')
+os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
+os.environ.setdefault('OPENCV_DISABLE_OPENCL', '1')
+
 import threading
 import uuid
 from datetime import datetime
@@ -219,6 +224,9 @@ def internal_error(e):
     return render_template('error.html', error='Internal server error', code=500), 500
 
 if __name__ == '__main__':
-    port = int(os.environ.get('PORT', 5001))  # Use 5001 as default, or set PORT env variable
-    app.run(debug=DEBUG, host='0.0.0.0', port=port)
+    # Railway and other platforms set PORT environment variable
+    port = int(os.environ.get('PORT', 5001))
+    # Disable debug mode in production
+    debug_mode = DEBUG and os.environ.get('RAILWAY_ENVIRONMENT') is None
+    app.run(debug=debug_mode, host='0.0.0.0', port=port)
 

@@ -2,10 +2,44 @@
 Gait Analysis Module
 Extracts core analysis logic from engine.py for use in web application
 """
-import cv2
-import mediapipe as mp
+import os
+# Disable OpenCV GUI backend before importing (for headless environments)
+os.environ['OPENCV_IO_ENABLE_OPENEXR'] = '0'
+os.environ['QT_QPA_PLATFORM'] = 'offscreen'
+
 import numpy as np
 from typing import Dict, List, Optional, Callable
+
+# Lazy import cv2 to avoid libGL issues
+_cv2 = None
+
+def get_cv2():
+    """Lazy import cv2 to avoid GUI library dependencies"""
+    global _cv2
+    if _cv2 is None:
+        try:
+            # Set environment variables before import
+            os.environ.setdefault('OPENCV_IO_ENABLE_OPENEXR', '0')
+            os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
+            
+            # Import cv2
+            import cv2
+            _cv2 = cv2
+        except (ImportError, OSError) as e:
+            error_msg = str(e)
+            if 'libGL' in error_msg or 'libGL.so' in error_msg:
+                raise RuntimeError(
+                    "OpenCV is trying to load GUI libraries (libGL). "
+                    "This usually means opencv-contrib-python is installed instead of opencv-python-headless. "
+                    "Please ensure only opencv-python-headless is installed: "
+                    "pip uninstall opencv-contrib-python opencv-python && pip install opencv-python-headless"
+                )
+            else:
+                raise ImportError(
+                    f"Failed to import OpenCV: {error_msg}. "
+                    "Please ensure opencv-python-headless is installed: pip install opencv-python-headless"
+                )
+    return _cv2
 
 # Gait pattern thresholds (in degrees)
 SEVERE_OVERPRONATION_THRESHOLD = 150
@@ -13,19 +47,44 @@ OVERPRONATION_THRESHOLD = 170
 NEUTRAL_MAX = 190
 SUPINATION_THRESHOLD = 210
 
-# Initialize MediaPipe Pose (reusable instance)
-mp_pose = mp.solutions.pose
+# Lazy MediaPipe import and initialization
 _pose_instance = None
+_mp_pose = None
 
 def get_pose_instance():
-    """Get or create MediaPipe Pose instance"""
-    global _pose_instance
+    """Get or create MediaPipe Pose instance (lazy import)"""
+    global _pose_instance, _mp_pose
     if _pose_instance is None:
-        _pose_instance = mp_pose.Pose(
-            min_detection_confidence=0.3,
-            min_tracking_confidence=0.3,
-            model_complexity=1
-        )
+        try:
+            # Import MediaPipe only when needed
+            import mediapipe as mp
+            
+            # Access solutions - this is where the error occurs if MediaPipe isn't properly installed
+            _mp_pose = mp.solutions.pose
+            
+            # Create Pose instance
+            _pose_instance = _mp_pose.Pose(
+                min_detection_confidence=0.3,
+                min_tracking_confidence=0.3,
+                model_complexity=1
+            )
+        except AttributeError as e:
+            # This catches the "no attribute 'solutions'" error
+            error_msg = str(e)
+            if 'solutions' in error_msg:
+                raise RuntimeError(
+                    "MediaPipe 'solutions' attribute not found. "
+                    "This usually indicates MediaPipe is not properly installed or there's a version mismatch. "
+                    "Please ensure mediapipe>=0.10.0 is installed correctly. "
+                    "If the issue persists, try: pip install --force-reinstall mediapipe"
+                )
+            else:
+                raise RuntimeError(f"MediaPipe initialization error: {error_msg}")
+        except ImportError as e:
+            raise RuntimeError(
+                f"Failed to import MediaPipe: {str(e)}. "
+                "Please ensure mediapipe>=0.10.0 is installed: pip install mediapipe>=0.10.0"
+            )
     return _pose_instance
 
 def enhance_contrast(img):
@@ -33,6 +92,7 @@ def enhance_contrast(img):
     Applies CLAHE (Contrast Limited Adaptive Histogram Equalization).
     This helps the AI see 'black shoes on black treadmill'.
     """
+    cv2 = get_cv2()
     lab = cv2.cvtColor(img, cv2.COLOR_BGR2LAB)
     l, a, b = cv2.split(lab)
     clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
@@ -117,6 +177,7 @@ def analyze_video(video_path: str, progress_callback: Optional[Callable[[int, in
     Returns:
         Dictionary containing analysis results
     """
+    cv2 = get_cv2()
     pose = get_pose_instance()
     left_angles = []
     right_angles = []
