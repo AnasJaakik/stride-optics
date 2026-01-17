@@ -57,7 +57,7 @@
    ============================================ */
 html {
     scroll-behavior: smooth;
-    zoom: 0.9; /* Zoom out the entire website by 10% */
+    zoom: 0.8; /* Zoom out the entire website by 10% */
 }
 
 body {
