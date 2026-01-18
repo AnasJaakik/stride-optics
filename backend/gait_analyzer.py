@@ -41,11 +41,13 @@ def get_cv2():
                 )
     return _cv2
 
-# Gait pattern thresholds (in degrees)
-SEVERE_OVERPRONATION_THRESHOLD = 150
-OVERPRONATION_THRESHOLD = 170
-NEUTRAL_MAX = 190
-SUPINATION_THRESHOLD = 210
+# Gait pattern thresholds (in degrees) - pronation/supination deviation angles
+# Positive values = inward (pronation), Negative values = outward (supination)
+HIGHLY_PRONATED_THRESHOLD = 10.0  # Angle > 10°: highly pronated
+PRONATION_THRESHOLD = 7.0  # 7° to 10°: pronation position
+NEUTRAL_MIN = 1.0  # 1° to 7°: neutral
+SUPINATION_THRESHOLD = -3.0  # -3° to 0°: hint of supination
+# Angle < -3°: highly supinated
 
 # Lazy MediaPipe import and initialization
 _pose_instance = None
@@ -112,20 +114,62 @@ def calculate_angle(a, b, c):
         angle = 360 - angle
     return angle
 
-def classify_gait_pattern(angle):
+def calculate_pronation_supination_angle(knee, ankle, heel, frame_width, frame_height):
     """
-    Classifies gait pattern based on ankle angle.
+    Calculate pronation/supination deviation angle from neutral.
+    This measures the angle of the foot deviation from vertical alignment.
+    
+    Positive values = inward roll (pronation)
+    Negative values = outward roll (supination)
+    
+    Args:
+        knee: [x, y] normalized coordinates of knee
+        ankle: [x, y] normalized coordinates of ankle
+        heel: [x, y] normalized coordinates of heel
+        frame_width: width of the frame in pixels
+        frame_height: height of the frame in pixels
+    
+    Returns:
+        Deviation angle in degrees (positive = pronation, negative = supination)
+    """
+    # Convert normalized coordinates to pixel coordinates
+    ankle_px = np.array([ankle[0] * frame_width, ankle[1] * frame_height])
+    heel_px = np.array([heel[0] * frame_width, heel[1] * frame_height])
+    
+    # Calculate the vector from ankle to heel
+    ankle_heel_vector = heel_px - ankle_px
+    
+    # Calculate horizontal and vertical components
+    horizontal_component = ankle_heel_vector[0]  # x component
+    vertical_component = np.abs(ankle_heel_vector[1])  # y component (always positive, pointing down)
+    
+    # Avoid division by zero
+    if vertical_component < 1.0:
+        return 0.0
+    
+    # Calculate the angle of deviation from vertical
+    # arctan2(horizontal, vertical) gives us the angle from vertical
+    # Positive horizontal = pronation (inward), Negative horizontal = supination (outward)
+    deviation_angle = np.arctan2(horizontal_component, vertical_component) * 180.0 / np.pi
+    
+    return deviation_angle
+
+def classify_gait_pattern(deviation_angle):
+    """
+    Classifies gait pattern based on pronation/supination deviation angle.
+    Positive values = pronation (inward), Negative values = supination (outward)
+    
     Returns: (pattern_name, severity_level)
     """
-    if angle < SEVERE_OVERPRONATION_THRESHOLD:
+    if deviation_angle > HIGHLY_PRONATED_THRESHOLD:
         return ("SEVERE OVERPRONATION", 4)
-    elif angle < OVERPRONATION_THRESHOLD:
+    elif deviation_angle > PRONATION_THRESHOLD:
         return ("OVERPRONATION", 3)
-    elif angle <= NEUTRAL_MAX:
+    elif deviation_angle >= NEUTRAL_MIN:
         return ("NEUTRAL", 1)
-    elif angle <= SUPINATION_THRESHOLD:
+    elif deviation_angle >= SUPINATION_THRESHOLD:
         return ("SUPINATION", 2)
-    else:
+    else:  # deviation_angle < -3°
         return ("SEVERE SUPINATION", 4)
 
 def get_shoe_recommendation(pattern):
@@ -219,9 +263,13 @@ def analyze_video(video_path: str, progress_callback: Optional[Callable[[int, in
                 l_heel = [landmarks[29].x, landmarks[29].y]
                 
                 if landmarks[27].visibility > 0.5:
-                    raw_angle_l = calculate_angle(l_knee, l_ankle, l_heel)
-                    if raw_angle_l > 140:
-                        left_angles.append(raw_angle_l)
+                    # Calculate pronation/supination deviation angle
+                    deviation_angle_l = calculate_pronation_supination_angle(
+                        l_knee, l_ankle, l_heel, frame_width, frame_height
+                    )
+                    # For left leg, positive = pronation (inward), negative = supination (outward)
+                    # Store the deviation angle
+                    left_angles.append(deviation_angle_l)
             except:
                 pass
             
@@ -232,9 +280,14 @@ def analyze_video(video_path: str, progress_callback: Optional[Callable[[int, in
                 r_heel = [landmarks[30].x, landmarks[30].y]
                 
                 if landmarks[28].visibility > 0.5:
-                    raw_angle_r = calculate_angle(r_knee, r_ankle, r_heel)
-                    if raw_angle_r > 140:
-                        right_angles.append(raw_angle_r)
+                    # Calculate pronation/supination deviation angle
+                    deviation_angle_r = calculate_pronation_supination_angle(
+                        r_knee, r_ankle, r_heel, frame_width, frame_height
+                    )
+                    # For right leg, we need to flip the sign (opposite of left leg)
+                    # Positive x deviation for right leg = supination, negative = pronation
+                    deviation_angle_r = -deviation_angle_r
+                    right_angles.append(deviation_angle_r)
             except:
                 pass
     
@@ -252,16 +305,18 @@ def analyze_video(video_path: str, progress_callback: Optional[Callable[[int, in
     
     # Analyze left leg
     if left_angles:
+        # Use average deviation angle for classification (more stable than min)
+        avg_angle_l = sum(left_angles) / len(left_angles)
         min_angle_l = min(left_angles)
         max_angle_l = max(left_angles)
-        avg_angle_l = sum(left_angles) / len(left_angles)
-        pattern_l, severity_l = classify_gait_pattern(min_angle_l)
+        pattern_l, severity_l = classify_gait_pattern(avg_angle_l)
         
         result["left_leg"] = {
             "angles": {
                 "min": float(min_angle_l),
                 "max": float(max_angle_l),
                 "avg": float(avg_angle_l),
+                "deviation": float(avg_angle_l),  # Main deviation angle
                 "all": [float(a) for a in left_angles]
             },
             "pattern": pattern_l,
@@ -271,16 +326,18 @@ def analyze_video(video_path: str, progress_callback: Optional[Callable[[int, in
     
     # Analyze right leg
     if right_angles:
+        # Use average deviation angle for classification (more stable than min)
+        avg_angle_r = sum(right_angles) / len(right_angles)
         min_angle_r = min(right_angles)
         max_angle_r = max(right_angles)
-        avg_angle_r = sum(right_angles) / len(right_angles)
-        pattern_r, severity_r = classify_gait_pattern(min_angle_r)
+        pattern_r, severity_r = classify_gait_pattern(avg_angle_r)
         
         result["right_leg"] = {
             "angles": {
                 "min": float(min_angle_r),
                 "max": float(max_angle_r),
                 "avg": float(avg_angle_r),
+                "deviation": float(avg_angle_r),  # Main deviation angle
                 "all": [float(a) for a in right_angles]
             },
             "pattern": pattern_r,
