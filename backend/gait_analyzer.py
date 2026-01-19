@@ -194,9 +194,9 @@ def calculate_pronation_supination_angle(knee, ankle, heel, frame_width, frame_h
     horizontal_component = ankle_heel_vector[0]  # x component (medial-lateral)
     vertical_component = np.abs(ankle_heel_vector[1])  # y component (always positive, pointing down)
     
-    # Avoid division by zero
-    if vertical_component < 1.0:
-        return 0.0
+    # Avoid division by zero - require minimum vertical distance for accuracy
+    if vertical_component < 2.0:  # Increased threshold for better accuracy
+        return None  # Return None instead of 0 to indicate invalid measurement
     
     # Calculate the angle of deviation from vertical
     # arctan2(horizontal, vertical) gives us the angle from vertical
@@ -204,6 +204,11 @@ def calculate_pronation_supination_angle(knee, ankle, heel, frame_width, frame_h
     # - Left leg: positive horizontal (heel right of ankle) = pronation (inward)
     # - Right leg: negative horizontal (heel left of ankle) = pronation (inward)
     deviation_angle = np.arctan2(horizontal_component, vertical_component) * 180.0 / np.pi
+    
+    # Filter out extreme outliers (likely detection errors)
+    # Normal pronation/supination angles should be within reasonable bounds
+    if abs(deviation_angle) > 45.0:  # Filter angles > 45 degrees (likely errors)
+        return None
     
     return deviation_angle
 
@@ -360,16 +365,21 @@ def draw_overlay(frame, frame_num, left_angle, right_angle, left_in_contact, rig
     
     return overlay
 
-def detect_ground_contact(ankle_y, previous_ankle_y, previous_velocity, contact_threshold=0.002):
+def detect_ground_contact(ankle_y, previous_ankle_y, previous_velocity, contact_threshold=0.003):
     """
     Detect if foot is in contact with ground based on vertical position and velocity.
     For rear view: ankle at maximum y (lowest point) = ground contact.
+    
+    Improved algorithm with better accuracy:
+    - Uses velocity and position thresholds
+    - Requires ankle to be in lower portion of frame
+    - Filters out noise with stricter criteria
     
     Args:
         ankle_y: Current ankle vertical position (normalized 0-1, higher = lower in frame)
         previous_ankle_y: Previous frame ankle vertical position
         previous_velocity: Previous vertical velocity
-        contact_threshold: Minimum velocity change to detect contact (increased to reduce false positives)
+        contact_threshold: Minimum velocity change to detect contact
     
     Returns:
         Tuple: (is_in_contact, is_foot_strike, is_toe_off)
@@ -381,25 +391,36 @@ def detect_ground_contact(ankle_y, previous_ankle_y, previous_velocity, contact_
     # In normalized coordinates, higher y = lower in frame
     velocity = ankle_y - previous_ankle_y
     
+    # Define thresholds for better accuracy
+    # Ankle must be in lower 60% of frame for ground contact (more accurate than 50%)
+    ground_level_threshold = 0.6
+    # Require more significant velocity change for foot strike (reduces false positives)
+    strike_velocity_threshold = contact_threshold * 1.5
+    
     # Foot strike: velocity changes from negative/zero to positive (foot coming down to ground)
-    # Require a more significant velocity change to avoid false positives
-    # Also require ankle to be in lower portion of frame (near ground)
+    # Require:
+    # 1. Previous velocity was negative or zero (foot was going up or stationary)
+    # 2. Current velocity is positive and significant (foot is descending)
+    # 3. Ankle is in lower portion of frame (near ground)
     foot_strike = (previous_velocity is not None and 
-                   previous_velocity <= 0 and 
-                   velocity > contact_threshold and
-                   ankle_y > 0.5)  # Ankle must be in lower half of frame
+                   previous_velocity <= 0.001 and  # Foot was going up or stationary
+                   velocity > strike_velocity_threshold and  # Significant downward movement
+                   ankle_y > ground_level_threshold)  # Ankle must be near ground
     
     # Toe-off: velocity changes from positive/zero to negative (foot lifting up from ground)
-    # Require significant upward movement
+    # Require significant upward movement after being on ground
     toe_off = (previous_velocity is not None and 
-               previous_velocity >= 0 and 
-               velocity < -contact_threshold)
+               previous_velocity >= -0.001 and  # Foot was going down or stationary
+               velocity < -contact_threshold)  # Significant upward movement
     
-    # In contact: foot is at or near its lowest point (velocity near zero and ankle is relatively low)
-    # For rear view, we consider contact when ankle is at local maximum y (lowest position)
-    # Use stricter criteria to avoid false positives
-    is_in_contact = (abs(velocity) < contact_threshold * 2 and 
-                     ankle_y > 0.5)  # Ankle must be in lower half of frame
+    # In contact: foot is at or near its lowest point
+    # Use stricter criteria:
+    # 1. Velocity is near zero (foot is stationary or moving slowly)
+    # 2. Ankle is in lower portion of frame
+    # 3. Previous velocity was positive (foot was descending, now stable)
+    is_in_contact = (abs(velocity) < contact_threshold * 1.5 and  # Low velocity
+                     ankle_y > ground_level_threshold and  # Near ground
+                     (previous_velocity is None or previous_velocity >= -0.001))  # Was descending or stable
     
     return (is_in_contact, foot_strike, toe_off)
 
@@ -597,16 +618,8 @@ def analyze_video(video_path: str, progress_callback: Optional[Callable[[int, in
                 l_ankle = [landmarks[27].x, landmarks[27].y]
                 l_heel = [landmarks[29].x, landmarks[29].y]
                 
+                # Track ankle position for ground contact detection (if ankle is visible)
                 if landmarks[27].visibility > 0.5:
-                    # Calculate pronation/supination deviation angle (rear view)
-                    deviation_angle_l = calculate_pronation_supination_angle(
-                        l_knee, l_ankle, l_heel, frame_width, frame_height
-                    )
-                    # For left leg in rear view: positive = pronation (heel moves right/inward), negative = supination (heel moves left/outward)
-                    left_angles.append(deviation_angle_l)
-                    current_left_angle = deviation_angle_l
-                    
-                    # Track ankle position for ground contact detection
                     left_ankle_positions.append((frame_count, l_ankle[1]))
                     
                     # Detect ground contact
@@ -634,6 +647,20 @@ def analyze_video(video_path: str, progress_callback: Optional[Callable[[int, in
                     if prev_l_ankle_y is not None:
                         prev_l_velocity = l_ankle[1] - prev_l_ankle_y
                     prev_l_ankle_y = l_ankle[1]
+                
+                # Use higher visibility threshold for better accuracy (0.6 instead of 0.5)
+                if landmarks[27].visibility > 0.6 and landmarks[29].visibility > 0.6:
+                    # Calculate pronation/supination deviation angle (rear view)
+                    deviation_angle_l = calculate_pronation_supination_angle(
+                        l_knee, l_ankle, l_heel, frame_width, frame_height
+                    )
+                    # Only add valid angles (not None)
+                    if deviation_angle_l is not None:
+                        # For left leg in rear view: positive = pronation (heel moves right/inward), negative = supination (heel moves left/outward)
+                        left_angles.append(deviation_angle_l)
+                        current_left_angle = deviation_angle_l
+                    else:
+                        current_left_angle = None
                 else:
                     current_left_angle = None
             except:
@@ -645,18 +672,8 @@ def analyze_video(video_path: str, progress_callback: Optional[Callable[[int, in
                 r_ankle = [landmarks[28].x, landmarks[28].y]
                 r_heel = [landmarks[30].x, landmarks[30].y]
                 
+                # Track ankle position for ground contact detection (if ankle is visible)
                 if landmarks[28].visibility > 0.5:
-                    # Calculate pronation/supination deviation angle (rear view)
-                    deviation_angle_r = calculate_pronation_supination_angle(
-                        r_knee, r_ankle, r_heel, frame_width, frame_height
-                    )
-                    # For right leg in rear view: negative horizontal (heel left of ankle) = pronation (inward)
-                    # Flip sign so positive = pronation for both legs (consistent convention)
-                    deviation_angle_r = -deviation_angle_r
-                    right_angles.append(deviation_angle_r)
-                    current_right_angle = deviation_angle_r
-                    
-                    # Track ankle position for ground contact detection
                     right_ankle_positions.append((frame_count, r_ankle[1]))
                     
                     # Detect ground contact
@@ -684,6 +701,22 @@ def analyze_video(video_path: str, progress_callback: Optional[Callable[[int, in
                     if prev_r_ankle_y is not None:
                         prev_r_velocity = r_ankle[1] - prev_r_ankle_y
                     prev_r_ankle_y = r_ankle[1]
+                
+                # Use higher visibility threshold for better accuracy (0.6 instead of 0.5)
+                if landmarks[28].visibility > 0.6 and landmarks[30].visibility > 0.6:
+                    # Calculate pronation/supination deviation angle (rear view)
+                    deviation_angle_r = calculate_pronation_supination_angle(
+                        r_knee, r_ankle, r_heel, frame_width, frame_height
+                    )
+                    # Only add valid angles (not None)
+                    if deviation_angle_r is not None:
+                        # For right leg in rear view: negative horizontal (heel left of ankle) = pronation (inward)
+                        # Flip sign so positive = pronation for both legs (consistent convention)
+                        deviation_angle_r = -deviation_angle_r
+                        right_angles.append(deviation_angle_r)
+                        current_right_angle = deviation_angle_r
+                    else:
+                        current_right_angle = None
                 else:
                     current_right_angle = None
             except:
@@ -704,22 +737,54 @@ def analyze_video(video_path: str, progress_callback: Optional[Callable[[int, in
     left_gct_times = []
     right_gct_times = []
     
+    # Filter and validate ground contact times for accuracy
     for start_frame, end_frame in left_contact_events:
         contact_time_ms = (end_frame - start_frame) * frame_time * 1000  # Convert to milliseconds
-        if contact_time_ms > 50:  # Filter out noise (minimum 50ms contact)
+        # Filter out noise and unrealistic values
+        # Normal GCT for running: 150-300ms, walking: 500-800ms
+        # Accept range: 50ms to 1000ms (very conservative)
+        if 50 <= contact_time_ms <= 1000:
             left_gct_times.append(contact_time_ms)
     
     for start_frame, end_frame in right_contact_events:
         contact_time_ms = (end_frame - start_frame) * frame_time * 1000  # Convert to milliseconds
-        if contact_time_ms > 50:  # Filter out noise (minimum 50ms contact)
+        # Filter out noise and unrealistic values
+        if 50 <= contact_time_ms <= 1000:
             right_gct_times.append(contact_time_ms)
     
-    # Calculate cadence
+    # Calculate cadence with improved accuracy
     video_duration_seconds = frame_count * frame_time
     total_steps = len(left_foot_strikes) + len(right_foot_strikes)
     cadence = 0
-    if video_duration_seconds > 0:
+    
+    # Only calculate cadence if we have enough data and reasonable duration
+    if video_duration_seconds > 1.0 and total_steps >= 2:  # At least 1 second and 2 steps
         cadence = (total_steps / video_duration_seconds) * 60  # Steps per minute
+        # Filter unrealistic cadence values (normal running: 160-180 spm, walking: 100-120 spm)
+        # Accept range: 60-300 spm (very conservative)
+        if cadence < 60 or cadence > 300:
+            # If cadence is unrealistic, recalculate using only valid foot strikes
+            # Filter strikes that are too close together (minimum 0.2 seconds apart)
+            min_frames_between_strikes = int(0.2 * fps)  # 0.2 seconds minimum
+            valid_left_strikes = []
+            valid_right_strikes = []
+            
+            for i, strike in enumerate(left_foot_strikes):
+                if i == 0 or strike - left_foot_strikes[i-1] >= min_frames_between_strikes:
+                    valid_left_strikes.append(strike)
+            
+            for i, strike in enumerate(right_foot_strikes):
+                if i == 0 or strike - right_foot_strikes[i-1] >= min_frames_between_strikes:
+                    valid_right_strikes.append(strike)
+            
+            total_valid_steps = len(valid_left_strikes) + len(valid_right_strikes)
+            if total_valid_steps >= 2:
+                cadence = (total_valid_steps / video_duration_seconds) * 60
+                # Update foot strikes lists for reporting
+                left_foot_strikes = valid_left_strikes
+                right_foot_strikes = valid_right_strikes
+            else:
+                cadence = 0  # Not enough valid data
     
     # Process results
     result = {
@@ -743,42 +808,124 @@ def analyze_video(video_path: str, progress_callback: Optional[Callable[[int, in
         }
     }
     
-    # Analyze left leg
-    if left_angles:
-        # Use average deviation angle for classification (more stable than min)
+    # Analyze left leg with improved accuracy
+    if left_angles and len(left_angles) >= 5:  # Require minimum 5 valid measurements
+        # Remove outliers using IQR method for more accurate results
+        sorted_angles = sorted(left_angles)
+        q1_idx = len(sorted_angles) // 4
+        q3_idx = (3 * len(sorted_angles)) // 4
+        q1 = sorted_angles[q1_idx]
+        q3 = sorted_angles[q3_idx]
+        iqr = q3 - q1
+        lower_bound = q1 - 1.5 * iqr
+        upper_bound = q3 + 1.5 * iqr
+        
+        # Filter out outliers
+        filtered_angles = [a for a in left_angles if lower_bound <= a <= upper_bound]
+        
+        if len(filtered_angles) >= 3:  # Need at least 3 after filtering
+            # Use median for more robust estimation (less affected by outliers)
+            sorted_filtered = sorted(filtered_angles)
+            median_angle_l = sorted_filtered[len(sorted_filtered) // 2]
+            avg_angle_l = sum(filtered_angles) / len(filtered_angles)
+            min_angle_l = min(filtered_angles)
+            max_angle_l = max(filtered_angles)
+            # Use median for classification (more accurate than mean)
+            pattern_l, severity_l = classify_gait_pattern(median_angle_l)
+        else:
+            # Fallback to mean if not enough data after filtering
+            avg_angle_l = sum(left_angles) / len(left_angles)
+            min_angle_l = min(left_angles)
+            max_angle_l = max(left_angles)
+            pattern_l, severity_l = classify_gait_pattern(avg_angle_l)
+            filtered_angles = left_angles
+    elif left_angles:
+        # Not enough data - use simple average
         avg_angle_l = sum(left_angles) / len(left_angles)
         min_angle_l = min(left_angles)
         max_angle_l = max(left_angles)
         pattern_l, severity_l = classify_gait_pattern(avg_angle_l)
-        
+        filtered_angles = left_angles
+    else:
+        avg_angle_l = None
+        min_angle_l = None
+        max_angle_l = None
+        pattern_l = None
+        severity_l = 0
+        filtered_angles = []
+    
+    # Set left leg result if we have data
+    if left_angles:
         result["left_leg"] = {
             "angles": {
                 "min": float(min_angle_l),
                 "max": float(max_angle_l),
                 "avg": float(avg_angle_l),
-                "deviation": float(avg_angle_l),  # Main deviation angle
-                "all": [float(a) for a in left_angles]
+                "median": float(sorted(filtered_angles)[len(filtered_angles) // 2]) if filtered_angles else float(avg_angle_l),
+                "deviation": float(sorted(filtered_angles)[len(filtered_angles) // 2]) if filtered_angles else float(avg_angle_l),  # Use median for main deviation
+                "all": [float(a) for a in filtered_angles] if filtered_angles else [float(a) for a in left_angles]
             },
             "pattern": pattern_l,
             "severity": severity_l,
             "warning": severity_l >= 3
         }
     
-    # Analyze right leg
-    if right_angles:
-        # Use average deviation angle for classification (more stable than min)
+    # Analyze right leg with improved accuracy
+    if right_angles and len(right_angles) >= 5:  # Require minimum 5 valid measurements
+        # Remove outliers using IQR method for more accurate results
+        sorted_angles = sorted(right_angles)
+        q1_idx = len(sorted_angles) // 4
+        q3_idx = (3 * len(sorted_angles)) // 4
+        q1 = sorted_angles[q1_idx]
+        q3 = sorted_angles[q3_idx]
+        iqr = q3 - q1
+        lower_bound = q1 - 1.5 * iqr
+        upper_bound = q3 + 1.5 * iqr
+        
+        # Filter out outliers
+        filtered_angles_r = [a for a in right_angles if lower_bound <= a <= upper_bound]
+        
+        if len(filtered_angles_r) >= 3:  # Need at least 3 after filtering
+            # Use median for more robust estimation (less affected by outliers)
+            sorted_filtered = sorted(filtered_angles_r)
+            median_angle_r = sorted_filtered[len(sorted_filtered) // 2]
+            avg_angle_r = sum(filtered_angles_r) / len(filtered_angles_r)
+            min_angle_r = min(filtered_angles_r)
+            max_angle_r = max(filtered_angles_r)
+            # Use median for classification (more accurate than mean)
+            pattern_r, severity_r = classify_gait_pattern(median_angle_r)
+        else:
+            # Fallback to mean if not enough data after filtering
+            avg_angle_r = sum(right_angles) / len(right_angles)
+            min_angle_r = min(right_angles)
+            max_angle_r = max(right_angles)
+            pattern_r, severity_r = classify_gait_pattern(avg_angle_r)
+            filtered_angles_r = right_angles
+    elif right_angles:
+        # Not enough data - use simple average
         avg_angle_r = sum(right_angles) / len(right_angles)
         min_angle_r = min(right_angles)
         max_angle_r = max(right_angles)
         pattern_r, severity_r = classify_gait_pattern(avg_angle_r)
-        
+        filtered_angles_r = right_angles
+    else:
+        avg_angle_r = None
+        min_angle_r = None
+        max_angle_r = None
+        pattern_r = None
+        severity_r = 0
+        filtered_angles_r = []
+    
+    # Set right leg result if we have data
+    if right_angles:
         result["right_leg"] = {
             "angles": {
                 "min": float(min_angle_r),
                 "max": float(max_angle_r),
                 "avg": float(avg_angle_r),
-                "deviation": float(avg_angle_r),  # Main deviation angle
-                "all": [float(a) for a in right_angles]
+                "median": float(sorted(filtered_angles_r)[len(filtered_angles_r) // 2]) if filtered_angles_r else float(avg_angle_r),
+                "deviation": float(sorted(filtered_angles_r)[len(filtered_angles_r) // 2]) if filtered_angles_r else float(avg_angle_r),  # Use median for main deviation
+                "all": [float(a) for a in filtered_angles_r] if filtered_angles_r else [float(a) for a in right_angles]
             },
             "pattern": pattern_r,
             "severity": severity_r,
