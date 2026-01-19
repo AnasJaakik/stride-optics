@@ -7,6 +7,18 @@
     <h1>Analyze Your Running Gait</h1>
     <p class="subtitle">Upload a video of yourself running to get personalized shoe recommendations</p>
 
+    <a href="#video-requirements" class="requirements-link">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="12" cy="12" r="10"></circle>
+            <line x1="12" y1="8" x2="12" y2="12"></line>
+            <line x1="12" y1="16" x2="12.01" y2="16"></line>
+        </svg>
+        <span>View video requirements for best results</span>
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <polyline points="9 18 15 12 9 6"></polyline>
+        </svg>
+    </a>
+
     <form id="upload-form" method="POST" action="{{ url_for('upload_file') }}" enctype="multipart/form-data">
         <div class="upload-area" id="upload-area">
             <input type="file" id="file-input" name="file" accept="video/*" required>
@@ -38,7 +50,7 @@
             <div class="step">
                 <div class="step-number">1</div>
                 <h3>Upload Video</h3>
-                <p>Record yourself running from the side view. Make sure both legs are visible.</p>
+                <p>Record yourself running from the rear view. Make sure both legs are visible.</p>
             </div>
             <div class="step">
                 <div class="step-number">2</div>
@@ -49,6 +61,99 @@
                 <div class="step-number">3</div>
                 <h3>Get Recommendations</h3>
                 <p>Receive personalized shoe recommendations based on your running style.</p>
+            </div>
+        </div>
+    </div>
+
+    <div class="requirements-section" id="video-requirements">
+        <h2>Video Requirements for Best Results</h2>
+        <p class="requirements-intro">Follow these guidelines to ensure accurate analysis of your running gait:</p>
+        
+        <div class="requirements-grid">
+            <div class="requirement-card">
+                <div class="requirement-icon">📹</div>
+                <h3>Camera Angle</h3>
+                <ul>
+                    <li><strong>Rear view:</strong> Camera positioned behind the runner</li>
+                    <li><strong>Height:</strong> Camera at hip level (1-1.5m)</li>
+                    <li><strong>Distance:</strong> 3-5 meters from runner</li>
+                    <li><strong>Angle:</strong> Directly behind, perpendicular to running direction</li>
+                </ul>
+            </div>
+
+            <div class="requirement-card">
+                <div class="requirement-icon">🎥</div>
+                <h3>Video Quality</h3>
+                <ul>
+                    <li><strong>Resolution:</strong> Minimum 720p, recommended 1080p+</li>
+                    <li><strong>Frame Rate:</strong> Minimum 24 fps, recommended 30+ fps</li>
+                    <li><strong>Duration:</strong> 10-20 seconds of continuous running</li>
+                    <li><strong>Format:</strong> MP4 (H.264) preferred</li>
+                </ul>
+            </div>
+
+            <div class="requirement-card">
+                <div class="requirement-icon">👤</div>
+                <h3>Subject Positioning</h3>
+                <ul>
+                    <li><strong>Visibility:</strong> Both legs fully visible throughout</li>
+                    <li><strong>Centering:</strong> Runner centered in frame</li>
+                    <li><strong>Size:</strong> Runner fills 40-60% of frame height</li>
+                    <li><strong>Clothing:</strong> Form-fitting shorts/leggings, visible shoes</li>
+                </ul>
+            </div>
+
+            <div class="requirement-card">
+                <div class="requirement-icon">💡</div>
+                <h3>Lighting & Background</h3>
+                <ul>
+                    <li><strong>Lighting:</strong> Even, bright, no harsh shadows</li>
+                    <li><strong>Background:</strong> Plain, contrasting color</li>
+                    <li><strong>Stability:</strong> Camera on tripod or stable surface</li>
+                    <li><strong>Contrast:</strong> Clear separation from background</li>
+                </ul>
+            </div>
+
+            <div class="requirement-card">
+                <div class="requirement-icon">🏃</div>
+                <h3>Running Conditions</h3>
+                <ul>
+                    <li><strong>Surface:</strong> Flat, level (treadmill or track)</li>
+                    <li><strong>Pace:</strong> Consistent, steady-state running</li>
+                    <li><strong>Strides:</strong> Capture 8-10+ complete gait cycles</li>
+                    <li><strong>Form:</strong> Natural running form, no starting/stopping</li>
+                </ul>
+            </div>
+
+            <div class="requirement-card">
+                <div class="requirement-icon">⚠️</div>
+                <h3>Common Issues to Avoid</h3>
+                <ul>
+                    <li>Camera too close or too far</li>
+                    <li>Angled view (not true rear view)</li>
+                    <li>Poor lighting or shadows on legs</li>
+                    <li>Motion blur or camera shake</li>
+                    <li>Legs crossing or occluded</li>
+                    <li>Video too short (&lt; 5 seconds)</li>
+                </ul>
+            </div>
+        </div>
+
+        <div class="requirements-tips">
+            <h3>💡 Pro Tips</h3>
+            <div class="tips-grid">
+                <div class="tip-item">
+                    <strong>Best Setup:</strong> Use a treadmill with camera behind you on tripod at hip height, 3-4 meters away
+                </div>
+                <div class="tip-item">
+                    <strong>Lighting:</strong> Natural daylight or bright indoor lighting works best
+                </div>
+                <div class="tip-item">
+                    <strong>Clothing:</strong> Wear contrasting colors (dark pants on light background)
+                </div>
+                <div class="tip-item">
+                    <strong>Duration:</strong> Record 10-20 seconds to capture multiple complete strides
+                </div>
             </div>
         </div>
     </div>

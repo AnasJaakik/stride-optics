@@ -60,6 +60,13 @@ class Result(Base):
     total_frames = Column(Integer, nullable=True)
     frames_analyzed = Column(Integer, nullable=True)
     
+    # Cadence and Ground Contact Time
+    cadence_data = Column(JSON, nullable=True)  # Store cadence metrics
+    ground_contact_time_data = Column(JSON, nullable=True)  # Store GCT metrics
+    
+    # Processed video with overlay
+    overlay_video_path = Column(String(255), nullable=True)  # Path to video with analysis overlay
+    
     # Relationship back to analysis
     analysis = relationship("Analysis", back_populates="result")
     
@@ -78,7 +85,10 @@ class Result(Base):
             'asymmetry_detected': self.asymmetry_detected == 'true',
             'asymmetry_details': self.asymmetry_details,
             'total_frames': self.total_frames,
-            'frames_analyzed': self.frames_analyzed
+            'frames_analyzed': self.frames_analyzed,
+            'cadence': self.cadence_data,
+            'ground_contact_time': self.ground_contact_time_data,
+            'overlay_video_path': self.overlay_video_path
         }
 
 # Database setup

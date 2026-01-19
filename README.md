@@ -51,7 +51,7 @@ A web application that analyzes running gait patterns from video uploads and pro
 ## Usage
 
 1. **Upload a Video**:
-   - Record yourself running from a side view
+   - Record yourself running from a rear view (camera behind you)
    - Ensure both legs are clearly visible
    - Upload the video file (MP4, AVI, MOV, MKV, WEBM, FLV)
    - Maximum file size: 500MB
@@ -97,11 +97,14 @@ gait-analysis-agent/
 
 ## Gait Patterns Detected
 
-- **Severe Overpronation** (< 150°): Maximum stability shoes recommended
-- **Overpronation** (150-170°): Stability shoes recommended
-- **Neutral** (170-190°): Neutral cushioned shoes recommended
-- **Supination** (190-210°): Extra cushioning recommended
-- **Severe Supination** (> 210°): Maximum cushioning recommended
+The system measures pronation/supination deviation angles from neutral:
+- **Severe Overpronation** (> 10°): Maximum stability shoes recommended
+- **Overpronation** (7° to 10°): Stability shoes recommended
+- **Neutral** (1° to 7°): Neutral cushioned shoes recommended
+- **Supination** (-3° to 0°): Extra cushioning recommended
+- **Severe Supination** (< -3°): Maximum cushioning recommended
+
+*Positive angles indicate pronation (inward roll), negative angles indicate supination (outward roll)*
 
 ## Technical Details
 
@@ -129,7 +132,7 @@ gait-analysis-agent/
 ## Troubleshooting
 
 - **Import errors**: Make sure the virtual environment is activated and all dependencies are installed
-- **Video processing fails**: Ensure the video clearly shows both legs from a side view
+- **Video processing fails**: Ensure the video is recorded from the rear view and clearly shows both legs
 - **File upload errors**: Check file size (max 500MB) and format (supported video formats only)
 
 ## License

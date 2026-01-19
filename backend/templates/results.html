@@ -25,6 +25,20 @@
             <h1>Analysis Results</h1>
             <p class="result-meta">Analyzed on {{ analysis.upload_date[:10] }} | Video: {{ analysis.original_filename }}</p>
 
+            <!-- Video with Overlay -->
+            {% if result.overlay_video_path %}
+            <div class="video-section">
+                <h2>Analysis Video with Overlay</h2>
+                <div class="video-container">
+                    <video controls class="analysis-video">
+                        <source src="{{ url_for('serve_video', filename=result.overlay_video_path) }}" type="video/mp4">
+                        Your browser does not support the video tag.
+                    </video>
+                </div>
+                <p class="video-note">This video shows real-time analysis overlays including angle measurements, gait patterns, ground contact indicators, and cadence.</p>
+            </div>
+            {% endif %}
+
             <div class="results-grid">
                 <!-- Left Leg Analysis -->
                 {% if result.left_leg %}
@@ -112,6 +126,77 @@
                     </div>
                     {% endif %}
                 </div>
+            </div>
+            {% endif %}
+
+            <!-- Cadence -->
+            {% if result.cadence and result.cadence.steps_per_minute > 0 %}
+            <div class="metrics-section">
+                <h2>Cadence</h2>
+                <div class="metric-card">
+                    <div class="metric-value">{{ "%.1f"|format(result.cadence.steps_per_minute) }}</div>
+                    <div class="metric-label">Steps per Minute</div>
+                    <div class="metric-details">
+                        <span>Left: {{ result.cadence.left_steps }} steps</span>
+                        <span>Right: {{ result.cadence.right_steps }} steps</span>
+                        <span>Duration: {{ "%.1f"|format(result.cadence.video_duration_seconds) }}s</span>
+                    </div>
+                </div>
+            </div>
+            {% endif %}
+
+            <!-- Ground Contact Time -->
+            {% if result.ground_contact_time and (result.ground_contact_time.left or result.ground_contact_time.right) %}
+            <div class="metrics-section">
+                <h2>Ground Contact Time</h2>
+                <div class="gct-grid">
+                    {% if result.ground_contact_time.left %}
+                    <div class="gct-card">
+                        <h3>Left Leg</h3>
+                        <div class="gct-value">{{ "%.1f"|format(result.ground_contact_time.left.average_ms) }}<span class="unit">ms</span></div>
+                        <div class="gct-stats">
+                            <div class="gct-stat">
+                                <span class="gct-stat-label">Min:</span>
+                                <span class="gct-stat-value">{{ "%.1f"|format(result.ground_contact_time.left.min_ms) }}ms</span>
+                            </div>
+                            <div class="gct-stat">
+                                <span class="gct-stat-label">Max:</span>
+                                <span class="gct-stat-value">{{ "%.1f"|format(result.ground_contact_time.left.max_ms) }}ms</span>
+                            </div>
+                            <div class="gct-stat">
+                                <span class="gct-stat-label">Contacts:</span>
+                                <span class="gct-stat-value">{{ result.ground_contact_time.left.contacts }}</span>
+                            </div>
+                        </div>
+                    </div>
+                    {% endif %}
+                    {% if result.ground_contact_time.right %}
+                    <div class="gct-card">
+                        <h3>Right Leg</h3>
+                        <div class="gct-value">{{ "%.1f"|format(result.ground_contact_time.right.average_ms) }}<span class="unit">ms</span></div>
+                        <div class="gct-stats">
+                            <div class="gct-stat">
+                                <span class="gct-stat-label">Min:</span>
+                                <span class="gct-stat-value">{{ "%.1f"|format(result.ground_contact_time.right.min_ms) }}ms</span>
+                            </div>
+                            <div class="gct-stat">
+                                <span class="gct-stat-label">Max:</span>
+                                <span class="gct-stat-value">{{ "%.1f"|format(result.ground_contact_time.right.max_ms) }}ms</span>
+                            </div>
+                            <div class="gct-stat">
+                                <span class="gct-stat-label">Contacts:</span>
+                                <span class="gct-stat-value">{{ result.ground_contact_time.right.contacts }}</span>
+                            </div>
+                        </div>
+                    </div>
+                    {% endif %}
+                </div>
+                {% if result.ground_contact_time.asymmetry_ms and result.ground_contact_time.asymmetry_ms > 20 %}
+                <div class="gct-asymmetry">
+                    <span class="warning-icon">⚠️</span>
+                    <span>Asymmetry detected: {{ "%.1f"|format(result.ground_contact_time.asymmetry_ms) }}ms difference</span>
+                </div>
+                {% endif %}
             </div>
             {% endif %}
 

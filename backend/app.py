@@ -56,12 +56,22 @@ def process_video(analysis_id, video_path):
                 analysis.progress = progress
                 session.commit()
         
-        # Run analysis
-        results_data = analyze_video(video_path, progress_callback=progress_callback)
+        # Generate overlay video path
+        import uuid
+        overlay_filename = f"overlay_{uuid.uuid4()}.mp4"
+        overlay_path = os.path.join(app.config['UPLOAD_FOLDER'], overlay_filename)
+        
+        # Run analysis with overlay video generation
+        results_data = analyze_video(
+            video_path, 
+            progress_callback=progress_callback,
+            generate_overlay_video=True,
+            overlay_output_path=overlay_path
+        )
         
         # Validate results
         if not results_data.get('left_leg') and not results_data.get('right_leg'):
-            raise ValueError("Unable to detect gait patterns. Please ensure the video clearly shows both legs while running.")
+            raise ValueError("Unable to detect gait patterns. Please ensure the video is recorded from the rear view and clearly shows both legs while running.")
         
         # Create result record
         result = Result(
@@ -74,7 +84,10 @@ def process_video(analysis_id, video_path):
             asymmetry_detected='true' if results_data.get('asymmetry_detected') else 'false',
             asymmetry_details=results_data.get('asymmetry_details'),
             total_frames=results_data.get('total_frames'),
-            frames_analyzed=results_data.get('frames_analyzed')
+            frames_analyzed=results_data.get('frames_analyzed'),
+            cadence_data=results_data.get('cadence'),
+            ground_contact_time_data=results_data.get('ground_contact_time'),
+            overlay_video_path=overlay_filename if results_data.get('overlay_video_path') else None
         )
         
         session.add(result)
@@ -195,6 +208,12 @@ def results(id):
         return render_template('results.html', analysis=analysis.to_dict(), result=result)
     finally:
         session.close()
+
+@app.route('/video/<path:filename>')
+def serve_video(filename):
+    """Serve processed video files"""
+    from flask import send_from_directory
+    return send_from_directory(app.config['UPLOAD_FOLDER'], filename)
 
 @app.route('/history')
 def history():
