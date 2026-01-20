@@ -71,6 +71,7 @@ def get_pose_instance():
                     min_tracking_confidence=0.3,
                     model_complexity=1
                 )
+                _using_tasks_api = False
             except AttributeError:
                 # If solutions API not available, use Tasks API with downloaded model
                 try:
@@ -117,13 +118,7 @@ def get_pose_instance():
                         f"Failed to initialize MediaPipe with Tasks API: {str(e)}. "
                         "Please ensure you have internet connection for first-time model download, "
                         "or use Python 3.9-3.11 to install MediaPipe 0.10.14 which supports the old API."
-                    )
-                except Exception as e:
-                    raise RuntimeError(
-                        f"Failed to initialize MediaPipe with Tasks API: {str(e)}. "
-                        "Please ensure you have internet connection for first-time model download, "
-                        "or use Python 3.9-3.11 to install MediaPipe 0.10.14 which supports the old API."
-                    )
+            )
         except AttributeError as e:
             error_msg = str(e)
             raise RuntimeError(
@@ -163,51 +158,83 @@ def calculate_angle(a, b, c):
         angle = 360 - angle
     return angle
 
-def calculate_pronation_supination_angle(knee, ankle, heel, frame_width, frame_height):
+def calculate_pronation_supination_angle(knee, ankle, heel, hip_left, hip_right, frame_width, frame_height):
     """
-    Calculate pronation/supination deviation angle from neutral (REAR VIEW).
-    This measures the medial-lateral deviation of the heel relative to the ankle.
+    Calculate pronation/supination deviation angle using dynamic "Biological Vertical".
     
-    For rear view footage:
-    - Positive values = inward roll (pronation) - heel moves toward centerline
-    - Negative values = outward roll (supination) - heel moves away from centerline
+    Instead of assuming image Y-axis is vertical, we compute a body centerline from
+    hip-midpoint to ankle-midpoint. This accounts for camera tilt and runner lean.
+    The heel's deviation is measured relative to this biological vertical.
+    
+    Why: Camera angles and body lean create false positives. This normalizes the
+    measurement to the runner's actual orientation.
     
     Args:
         knee: [x, y] normalized coordinates of knee
         ankle: [x, y] normalized coordinates of ankle
         heel: [x, y] normalized coordinates of heel
+        hip_left: [x, y] normalized coordinates of left hip
+        hip_right: [x, y] normalized coordinates of right hip
         frame_width: width of the frame in pixels
         frame_height: height of the frame in pixels
     
     Returns:
         Deviation angle in degrees (positive = pronation, negative = supination)
     """
-    # Convert normalized coordinates to pixel coordinates
+    # Convert to pixel coordinates
+    hip_left_px = np.array([hip_left[0] * frame_width, hip_left[1] * frame_height])
+    hip_right_px = np.array([hip_right[0] * frame_width, hip_right[1] * frame_height])
     ankle_px = np.array([ankle[0] * frame_width, ankle[1] * frame_height])
     heel_px = np.array([heel[0] * frame_width, heel[1] * frame_height])
     
-    # Calculate the vector from ankle to heel
+    # Compute body centerline: midpoint of hips to midpoint of ankles
+    # For single leg, we use the corresponding hip and ankle
+    hip_midpoint = (hip_left_px + hip_right_px) / 2.0
+    
+    # Body centerline vector (biological vertical)
+    # This represents the true vertical axis of the runner's body
+    body_vertical = np.array([0, 1])  # Default: image vertical
+    
+    # If we have both hips visible, compute actual body orientation
+    # Vector from hip midpoint downward (we'll use ankle as reference for direction)
+    hip_to_ankle = ankle_px - hip_midpoint
+    hip_to_ankle_norm = np.linalg.norm(hip_to_ankle)
+    
+    if hip_to_ankle_norm > 5.0:  # Minimum distance threshold
+        # Normalize to get direction vector
+        body_vertical = hip_to_ankle / hip_to_ankle_norm
+    
+    # Ankle-to-heel vector (what we're measuring)
     ankle_heel_vector = heel_px - ankle_px
+    ankle_heel_norm = np.linalg.norm(ankle_heel_vector)
     
-    # Calculate horizontal (medial-lateral) and vertical components
-    # For rear view: x-axis represents medial-lateral direction
-    horizontal_component = ankle_heel_vector[0]  # x component (medial-lateral)
-    vertical_component = np.abs(ankle_heel_vector[1])  # y component (always positive, pointing down)
+    if ankle_heel_norm < 2.0:  # Minimum distance for valid measurement
+        return None
     
-    # Avoid division by zero - require minimum vertical distance for accuracy
-    if vertical_component < 2.0:  # Increased threshold for better accuracy
-        return None  # Return None instead of 0 to indicate invalid measurement
+    # Project ankle-heel vector onto plane perpendicular to body vertical
+    # This gives us the medial-lateral component relative to body orientation
+    # For rear view, we want the component perpendicular to the body centerline
     
-    # Calculate the angle of deviation from vertical
-    # arctan2(horizontal, vertical) gives us the angle from vertical
-    # For rear view:
-    # - Left leg: positive horizontal (heel right of ankle) = pronation (inward)
-    # - Right leg: negative horizontal (heel left of ankle) = pronation (inward)
-    deviation_angle = np.arctan2(horizontal_component, vertical_component) * 180.0 / np.pi
+    # Compute cross product to get perpendicular component
+    # In 2D, we rotate body_vertical by 90° to get horizontal axis
+    body_horizontal = np.array([-body_vertical[1], body_vertical[0]])  # Rotate 90° CCW
     
-    # Filter out extreme outliers (likely detection errors)
-    # Normal pronation/supination angles should be within reasonable bounds
-    if abs(deviation_angle) > 45.0:  # Filter angles > 45 degrees (likely errors)
+    # Project ankle-heel vector onto body's horizontal (medial-lateral) axis
+    medial_lateral_component = np.dot(ankle_heel_vector, body_horizontal)
+    
+    # Project onto body's vertical axis (along leg)
+    vertical_component = np.dot(ankle_heel_vector, body_vertical)
+    
+    # Avoid division by zero
+    if abs(vertical_component) < 1.0:
+        return None
+    
+    # Calculate deviation angle from body vertical
+    # Positive = heel moves inward (pronation), Negative = outward (supination)
+    deviation_angle = np.arctan2(medial_lateral_component, abs(vertical_component)) * 180.0 / np.pi
+    
+    # Filter extreme outliers
+    if abs(deviation_angle) > 45.0:
         return None
     
     return deviation_angle
@@ -269,9 +296,9 @@ def get_shoe_recommendation(pattern):
     }
 
 def draw_overlay(frame, frame_num, left_angle, right_angle, left_in_contact, right_in_contact, 
-                  left_pattern, right_pattern, cadence, fps, frame_width, frame_height):
+                  left_pattern, right_pattern, cadence, fps, frame_width, frame_height, landmarks=None):
     """
-    Draw analysis overlay on video frame.
+    Draw analysis overlay on video frame with landmark visualization.
     
     Args:
         frame: OpenCV frame (BGR)
@@ -286,6 +313,7 @@ def draw_overlay(frame, frame_num, left_angle, right_angle, left_in_contact, rig
         fps: Video frame rate
         frame_width: Frame width
         frame_height: Frame height
+        landmarks: Dict with 'left', 'right', 'hips' containing landmark positions (normalized 0-1)
     """
     cv2 = get_cv2()
     
@@ -298,9 +326,76 @@ def draw_overlay(frame, frame_num, left_angle, right_angle, left_in_contact, rig
     yellow = (0, 255, 255)
     red = (0, 0, 255)
     black = (0, 0, 0)
+    cyan = (255, 255, 0)  # Cyan for lines
+    magenta = (255, 0, 255)  # Magenta for biological vertical
     
     # Semi-transparent background for text areas
     overlay_alpha = 0.7
+    
+    # Draw landmarks and lines if available
+    if landmarks:
+        # Left leg visualization
+        if 'left' in landmarks and landmarks['left']:
+            left_landmarks = landmarks['left']
+            if left_landmarks.get('knee') and left_landmarks.get('ankle') and left_landmarks.get('heel'):
+                # Convert normalized coordinates to pixel coordinates
+                l_knee_px = (int(left_landmarks['knee'][0] * frame_width), 
+                            int(left_landmarks['knee'][1] * frame_height))
+                l_ankle_px = (int(left_landmarks['ankle'][0] * frame_width), 
+                             int(left_landmarks['ankle'][1] * frame_height))
+                l_heel_px = (int(left_landmarks['heel'][0] * frame_width), 
+                            int(left_landmarks['heel'][1] * frame_height))
+                
+                # Draw lines: knee-ankle and ankle-heel
+                cv2.line(overlay, l_knee_px, l_ankle_px, cyan, 2)
+                cv2.line(overlay, l_ankle_px, l_heel_px, cyan, 2)
+                
+                # Draw dots (landmarks)
+                cv2.circle(overlay, l_knee_px, 5, volt_green, -1)  # Knee - green
+                cv2.circle(overlay, l_ankle_px, 5, yellow, -1)  # Ankle - yellow
+                cv2.circle(overlay, l_heel_px, 5, red, -1)  # Heel - red
+        
+        # Right leg visualization
+        if 'right' in landmarks and landmarks['right']:
+            right_landmarks = landmarks['right']
+            if right_landmarks.get('knee') and right_landmarks.get('ankle') and right_landmarks.get('heel'):
+                # Convert normalized coordinates to pixel coordinates
+                r_knee_px = (int(right_landmarks['knee'][0] * frame_width), 
+                             int(right_landmarks['knee'][1] * frame_height))
+                r_ankle_px = (int(right_landmarks['ankle'][0] * frame_width), 
+                             int(right_landmarks['ankle'][1] * frame_height))
+                r_heel_px = (int(right_landmarks['heel'][0] * frame_width), 
+                            int(right_landmarks['heel'][1] * frame_height))
+                
+                # Draw lines: knee-ankle and ankle-heel
+                cv2.line(overlay, r_knee_px, r_ankle_px, cyan, 2)
+                cv2.line(overlay, r_ankle_px, r_heel_px, cyan, 2)
+                
+                # Draw dots (landmarks)
+                cv2.circle(overlay, r_knee_px, 5, volt_green, -1)  # Knee - green
+                cv2.circle(overlay, r_ankle_px, 5, yellow, -1)  # Ankle - yellow
+                cv2.circle(overlay, r_heel_px, 5, red, -1)  # Heel - red
+        
+        # Draw biological vertical (hip midpoint to ankle) if available
+        if 'hips' in landmarks and landmarks['hips']:
+            hips = landmarks['hips']
+            if hips.get('left') and hips.get('right'):
+                # Calculate hip midpoint
+                hip_mid_x = (hips['left'][0] + hips['right'][0]) / 2.0
+                hip_mid_y = (hips['left'][1] + hips['right'][1]) / 2.0
+                hip_mid_px = (int(hip_mid_x * frame_width), int(hip_mid_y * frame_height))
+                
+                # Draw biological vertical to left ankle if available
+                if 'left' in landmarks and landmarks['left'] and landmarks['left'].get('ankle'):
+                    l_ankle_px = (int(landmarks['left']['ankle'][0] * frame_width), 
+                                 int(landmarks['left']['ankle'][1] * frame_height))
+                    cv2.line(overlay, hip_mid_px, l_ankle_px, magenta, 1)
+                
+                # Draw biological vertical to right ankle if available
+                if 'right' in landmarks and landmarks['right'] and landmarks['right'].get('ankle'):
+                    r_ankle_px = (int(landmarks['right']['ankle'][0] * frame_width), 
+                                 int(landmarks['right']['ankle'][1] * frame_height))
+                    cv2.line(overlay, hip_mid_px, r_ankle_px, magenta, 1)
     
     # Handle None patterns
     if left_pattern is None:
@@ -364,6 +459,97 @@ def draw_overlay(frame, frame_num, left_angle, right_angle, left_in_contact, rig
                         cv2.FONT_HERSHEY_SIMPLEX, 0.6, red, 2)
     
     return overlay
+
+def smooth_signal(signal, window_size=5):
+    """
+    Apply weighted moving average to smooth temporal signal.
+    
+    Why: MediaPipe produces high-frequency jitter. This filter preserves
+    gait patterns while eliminating noise. Uses triangular weights for
+    better edge preservation than simple moving average.
+    
+    Args:
+        signal: 1D array of values
+        window_size: Size of smoothing window (must be odd)
+    
+    Returns:
+        Smoothed signal array
+    """
+    if len(signal) < window_size:
+        return signal
+    
+    # Ensure window_size is odd
+    if window_size % 2 == 0:
+        window_size += 1
+    
+    # Triangular weights: center has highest weight
+    half = window_size // 2
+    weights = np.array([i + 1 for i in range(half + 1)] + [half + 1 - i for i in range(1, half + 1)])
+    weights = weights / weights.sum()
+    
+    smoothed = np.convolve(signal, weights, mode='same')
+    return smoothed
+
+def detect_ground_contact_zero_crossing(ankle_y_series, velocities, peak_to_peak_range):
+    """
+    Physics-based ground contact detection using zero-crossing on normalized velocity.
+    
+    Why: Hard-coded thresholds fail when runner distance varies. Normalizing by
+    peak-to-peak travel makes detection scale-invariant. Zero-crossing detects
+    the moment velocity changes sign (foot stops descending, starts ascending).
+    
+    Args:
+        ankle_y_series: Array of ankle Y positions (normalized, higher = lower in frame)
+        velocities: Array of vertical velocities (positive = down, negative = up)
+        peak_to_peak_range: Peak-to-peak vertical travel distance for normalization
+    
+    Returns:
+        List of (start_frame, end_frame) contact event tuples
+    """
+    if len(velocities) < 3 or peak_to_peak_range < 0.001:
+        return []
+    
+    # Convert to numpy array for vectorized operations
+    velocities_array = np.array(velocities, dtype=float)
+    
+    # Normalize velocities by peak-to-peak range
+    # This makes the threshold scale-invariant
+    normalized_velocities = velocities_array / peak_to_peak_range if peak_to_peak_range > 0 else velocities_array
+    
+    # Zero-crossing detection: find where velocity crosses zero (changes sign)
+    # Foot strike: velocity crosses from negative to positive (or near-zero to positive)
+    # Toe-off: velocity crosses from positive to negative
+    
+    contact_events = []
+    in_contact = False
+    contact_start = None
+    
+    # Threshold for "near zero" (normalized)
+    zero_threshold = 0.1  # 10% of peak-to-peak range
+    
+    for i in range(1, len(normalized_velocities)):
+        prev_vel = normalized_velocities[i-1]
+        curr_vel = normalized_velocities[i]
+        
+        # Foot strike: velocity crosses from negative/zero to positive
+        # Also require ankle to be in lower portion of frame
+        if not in_contact and prev_vel <= zero_threshold and curr_vel > zero_threshold:
+            if ankle_y_series[i] > 0.5:  # Ankle in lower half of frame
+                in_contact = True
+                contact_start = i
+        
+        # Toe-off: velocity crosses from positive/zero to negative
+        elif in_contact and prev_vel >= -zero_threshold and curr_vel < -zero_threshold:
+            if contact_start is not None:
+                contact_events.append((contact_start, i))
+            in_contact = False
+            contact_start = None
+    
+    # Close any open contact event
+    if in_contact and contact_start is not None:
+        contact_events.append((contact_start, len(velocities) - 1))
+    
+    return contact_events
 
 def detect_ground_contact(ankle_y, previous_ankle_y, previous_velocity, contact_threshold=0.003):
     """
@@ -489,13 +675,20 @@ def generate_video_with_overlay(video_path: str, output_path: str, frame_data: L
         right_angle = frame_info.get('right_angle')
         left_in_contact = frame_info.get('left_in_contact', False)
         right_in_contact = frame_info.get('right_in_contact', False)
+        landmarks = frame_info.get('landmarks', {})
+        stored_frame_width = frame_info.get('frame_width', frame_width)
+        stored_frame_height = frame_info.get('frame_height', frame_height)
+        
+        # Use stored dimensions if available (in case video was resized)
+        overlay_width = stored_frame_width if stored_frame_width else frame_width
+        overlay_height = stored_frame_height if stored_frame_height else frame_height
         
         # Draw overlay
         overlay_frame = draw_overlay(
             frame, frame_idx, left_angle, right_angle, 
             left_in_contact, right_in_contact,
             left_pattern, right_pattern, avg_cadence,
-            fps, frame_width, frame_height
+            fps, overlay_width, overlay_height, landmarks
         )
         
         out.write(overlay_frame)
@@ -504,14 +697,78 @@ def generate_video_with_overlay(video_path: str, output_path: str, frame_data: L
     out.release()
     return True
 
+def interpolate_low_confidence(values, confidences, min_confidence=0.7):
+    """
+    Interpolate values where confidence is below threshold.
+    
+    Why: Low-confidence MediaPipe detections create outliers that skew
+    median/mean calculations. Linear interpolation replaces them with
+    estimates based on neighboring high-confidence frames.
+    
+    Args:
+        values: Array of angle values (may contain None)
+        confidences: Array of visibility/confidence scores
+        min_confidence: Minimum confidence threshold
+    
+    Returns:
+        Array with interpolated values replacing low-confidence entries
+    """
+    if len(values) == 0:
+        return values
+    
+    result = values.copy()
+    
+    # Find indices with low confidence
+    low_conf_indices = [i for i, conf in enumerate(confidences) if conf < min_confidence]
+    
+    if len(low_conf_indices) == 0:
+        return result
+    
+    # Interpolate each low-confidence value
+    for idx in low_conf_indices:
+        # Find nearest high-confidence neighbors
+        left_val = None
+        right_val = None
+        
+        # Search left
+        for i in range(idx - 1, -1, -1):
+            if i < len(confidences) and confidences[i] >= min_confidence and values[i] is not None:
+                left_val = (i, values[i])
+                break
+        
+        # Search right
+        for i in range(idx + 1, len(confidences)):
+            if i < len(confidences) and confidences[i] >= min_confidence and values[i] is not None:
+                right_val = (i, values[i])
+                break
+        
+        # Linear interpolation
+        if left_val and right_val:
+            # Weighted average based on distance
+            left_dist = idx - left_val[0]
+            right_dist = right_val[0] - idx
+            total_dist = left_dist + right_dist
+            if total_dist > 0:
+                interpolated = (right_val[1] * left_dist + left_val[1] * right_dist) / total_dist
+                result[idx] = interpolated
+        elif left_val:
+            result[idx] = left_val[1]  # Use left neighbor
+        elif right_val:
+            result[idx] = right_val[1]  # Use right neighbor
+        # If no neighbors, keep original (will be filtered later)
+    
+    return result
+
 def analyze_video(video_path: str, progress_callback: Optional[Callable[[int, int], None]] = None, 
                  generate_overlay_video: bool = True, overlay_output_path: Optional[str] = None) -> Dict:
     """
-    Analyze a video file for gait patterns (REAR VIEW REQUIRED).
+    Analyze a video file for gait patterns using robust signal processing.
     
-    The video should be recorded from behind the runner, showing both legs from the rear.
-    This allows accurate measurement of pronation/supination (medial-lateral foot movement),
-    ground contact time, and cadence.
+    Implements four key improvements over frame-by-frame heuristics:
+    1. Dynamic "Biological Vertical" - accounts for camera tilt/body lean
+    2. Temporal smoothing - eliminates MediaPipe jitter
+    3. Physics-based contact detection - scale-invariant zero-crossing
+    4. Confidence-weighted analysis - interpolates low-confidence frames
     
     Args:
         video_path: Path to the video file
@@ -521,9 +778,51 @@ def analyze_video(video_path: str, progress_callback: Optional[Callable[[int, in
         Dictionary containing analysis results
     """
     cv2 = get_cv2()
-    pose = get_pose_instance()
-    left_angles = []
-    right_angles = []
+    
+    # For Tasks API, create a new instance per video to avoid timestamp conflicts
+    # The old Solutions API can be reused safely
+    global _using_tasks_api
+    try:
+        from mediapipe.tasks.python.vision import PoseLandmarker
+        existing_pose = get_pose_instance()
+        if isinstance(existing_pose, PoseLandmarker):
+            # Create a fresh instance for this video to reset internal timestamp state
+            from mediapipe.tasks import python
+            from mediapipe.tasks.python import vision
+            from pathlib import Path
+            
+            model_dir = Path(__file__).parent.parent / 'models'
+            model_path = model_dir / 'pose_landmarker.task'
+            
+            if model_path.exists():
+                base_options = python.BaseOptions(model_asset_path=str(model_path))
+                options = vision.PoseLandmarkerOptions(
+                    base_options=base_options,
+                    running_mode=vision.RunningMode.VIDEO,
+                    min_pose_detection_confidence=0.3,
+                    min_pose_presence_confidence=0.3,
+                    min_tracking_confidence=0.3,
+                    output_segmentation_masks=False
+                )
+                pose = vision.PoseLandmarker.create_from_options(options)
+            else:
+                pose = existing_pose  # Fallback to existing if model not found
+        else:
+            pose = existing_pose  # Use existing for Solutions API
+    except (ImportError, Exception):
+        # Fallback to existing instance if anything goes wrong
+        pose = get_pose_instance()
+    
+    # Raw angle measurements with confidence scores
+    left_angles_raw = []  # (angle, confidence, frame_idx)
+    right_angles_raw = []
+    
+    # Ankle positions and velocities for contact detection
+    left_ankle_y_series = []
+    right_ankle_y_series = []
+    left_velocities = []
+    right_velocities = []
+    
     frame_count = 0
     
     # Ground contact tracking
@@ -552,6 +851,7 @@ def analyze_video(video_path: str, progress_callback: Optional[Callable[[int, in
     current_right_angle = None
     
     # Track last timestamp for MediaPipe Tasks API (must be monotonically increasing)
+    # Reset to -1 at the start of each video analysis to ensure fresh timestamps
     last_timestamp_ms = -1
     
     cap = cv2.VideoCapture(video_path)
@@ -611,6 +911,12 @@ def analyze_video(video_path: str, progress_callback: Optional[Callable[[int, in
             landmarks = pose_landmarks.landmark if pose_landmarks else None
         
         if landmarks:
+            # Extract hip landmarks for biological vertical (landmarks 23=left hip, 24=right hip)
+            try:
+                l_hip = [landmarks[23].x, landmarks[23].y] if len(landmarks) > 23 else None
+                r_hip = [landmarks[24].x, landmarks[24].y] if len(landmarks) > 24 else None
+            except:
+                l_hip = r_hip = None
             
             # LEFT LEG
             try:
@@ -618,46 +924,31 @@ def analyze_video(video_path: str, progress_callback: Optional[Callable[[int, in
                 l_ankle = [landmarks[27].x, landmarks[27].y]
                 l_heel = [landmarks[29].x, landmarks[29].y]
                 
-                # Track ankle position for ground contact detection (if ankle is visible)
+                # Track ankle position and velocity for zero-crossing detection
                 if landmarks[27].visibility > 0.5:
-                    left_ankle_positions.append((frame_count, l_ankle[1]))
-                    
-                    # Detect ground contact
-                    is_contact, foot_strike, toe_off = detect_ground_contact(
-                        l_ankle[1], prev_l_ankle_y, prev_l_velocity
-                    )
-                    
-                    if foot_strike:
-                        # Only count as foot strike if we're not already in contact
-                        # This prevents counting multiple strikes during the same contact phase
-                        if not in_contact_left:
-                            left_foot_strikes.append(frame_count)
-                            contact_start_left = frame_count
-                            in_contact_left = True
-                    
-                    if toe_off and in_contact_left and contact_start_left is not None:
-                        # End of contact - calculate contact time
-                        contact_duration_frames = frame_count - contact_start_left
-                        if contact_duration_frames > 0:
-                            left_contact_events.append((contact_start_left, frame_count))
-                        in_contact_left = False
-                        contact_start_left = None
-                    
-                    # Update previous values
+                    left_ankle_y_series.append(l_ankle[1])
                     if prev_l_ankle_y is not None:
-                        prev_l_velocity = l_ankle[1] - prev_l_ankle_y
+                        velocity = l_ankle[1] - prev_l_ankle_y
+                        left_velocities.append(velocity)
+                    else:
+                        left_velocities.append(0.0)
                     prev_l_ankle_y = l_ankle[1]
+                else:
+                    # Pad with None if ankle not visible
+                    left_ankle_y_series.append(None)
+                    left_velocities.append(None)
                 
-                # Use higher visibility threshold for better accuracy (0.6 instead of 0.5)
-                if landmarks[27].visibility > 0.6 and landmarks[29].visibility > 0.6:
-                    # Calculate pronation/supination deviation angle (rear view)
+                # Calculate angle with biological vertical (requires hips)
+                if l_hip and r_hip and landmarks[27].visibility > 0.5 and landmarks[29].visibility > 0.5:
                     deviation_angle_l = calculate_pronation_supination_angle(
-                        l_knee, l_ankle, l_heel, frame_width, frame_height
+                        l_knee, l_ankle, l_heel, l_hip, r_hip, frame_width, frame_height
                     )
-                    # Only add valid angles (not None)
                     if deviation_angle_l is not None:
-                        # For left leg in rear view: positive = pronation (heel moves right/inward), negative = supination (heel moves left/outward)
-                        left_angles.append(deviation_angle_l)
+                        # Store with confidence score for later interpolation
+                        min_confidence = min(landmarks[27].visibility, landmarks[29].visibility, 
+                                            landmarks[23].visibility if l_hip else 1.0,
+                                            landmarks[24].visibility if r_hip else 1.0)
+                        left_angles_raw.append((deviation_angle_l, min_confidence, frame_count))
                         current_left_angle = deviation_angle_l
                     else:
                         current_left_angle = None
@@ -672,48 +963,33 @@ def analyze_video(video_path: str, progress_callback: Optional[Callable[[int, in
                 r_ankle = [landmarks[28].x, landmarks[28].y]
                 r_heel = [landmarks[30].x, landmarks[30].y]
                 
-                # Track ankle position for ground contact detection (if ankle is visible)
+                # Track ankle position and velocity for zero-crossing detection
                 if landmarks[28].visibility > 0.5:
-                    right_ankle_positions.append((frame_count, r_ankle[1]))
-                    
-                    # Detect ground contact
-                    is_contact, foot_strike, toe_off = detect_ground_contact(
-                        r_ankle[1], prev_r_ankle_y, prev_r_velocity
-                    )
-                    
-                    if foot_strike:
-                        # Only count as foot strike if we're not already in contact
-                        # This prevents counting multiple strikes during the same contact phase
-                        if not in_contact_right:
-                            right_foot_strikes.append(frame_count)
-                            contact_start_right = frame_count
-                            in_contact_right = True
-                    
-                    if toe_off and in_contact_right and contact_start_right is not None:
-                        # End of contact - calculate contact time
-                        contact_duration_frames = frame_count - contact_start_right
-                        if contact_duration_frames > 0:
-                            right_contact_events.append((contact_start_right, frame_count))
-                        in_contact_right = False
-                        contact_start_right = None
-                    
-                    # Update previous values
+                    right_ankle_y_series.append(r_ankle[1])
                     if prev_r_ankle_y is not None:
-                        prev_r_velocity = r_ankle[1] - prev_r_ankle_y
+                        velocity = r_ankle[1] - prev_r_ankle_y
+                        right_velocities.append(velocity)
+                    else:
+                        right_velocities.append(0.0)
                     prev_r_ankle_y = r_ankle[1]
+                else:
+                    # Pad with None if ankle not visible
+                    right_ankle_y_series.append(None)
+                    right_velocities.append(None)
                 
-                # Use higher visibility threshold for better accuracy (0.6 instead of 0.5)
-                if landmarks[28].visibility > 0.6 and landmarks[30].visibility > 0.6:
-                    # Calculate pronation/supination deviation angle (rear view)
+                # Calculate angle with biological vertical (requires hips)
+                if l_hip and r_hip and landmarks[28].visibility > 0.5 and landmarks[30].visibility > 0.5:
                     deviation_angle_r = calculate_pronation_supination_angle(
-                        r_knee, r_ankle, r_heel, frame_width, frame_height
+                        r_knee, r_ankle, r_heel, l_hip, r_hip, frame_width, frame_height
                     )
-                    # Only add valid angles (not None)
                     if deviation_angle_r is not None:
-                        # For right leg in rear view: negative horizontal (heel left of ankle) = pronation (inward)
-                        # Flip sign so positive = pronation for both legs (consistent convention)
+                        # For right leg: flip sign for consistent convention (positive = pronation)
                         deviation_angle_r = -deviation_angle_r
-                        right_angles.append(deviation_angle_r)
+                        # Store with confidence score
+                        min_confidence = min(landmarks[28].visibility, landmarks[30].visibility,
+                                            landmarks[23].visibility if l_hip else 1.0,
+                                            landmarks[24].visibility if r_hip else 1.0)
+                        right_angles_raw.append((deviation_angle_r, min_confidence, frame_count))
                         current_right_angle = deviation_angle_r
                     else:
                         current_right_angle = None
@@ -722,33 +998,129 @@ def analyze_video(video_path: str, progress_callback: Optional[Callable[[int, in
             except:
                 pass
         
-        # Store frame data for overlay
+        # Store frame data for overlay (including landmark positions for visualization)
+        frame_landmarks = {}
+        if landmarks:
+            try:
+                # Left leg landmarks (normalized coordinates)
+                if len(landmarks) > 29:
+                    frame_landmarks['left'] = {
+                        'knee': [landmarks[25].x, landmarks[25].y] if landmarks[25].visibility > 0.5 else None,
+                        'ankle': [landmarks[27].x, landmarks[27].y] if landmarks[27].visibility > 0.5 else None,
+                        'heel': [landmarks[29].x, landmarks[29].y] if landmarks[29].visibility > 0.5 else None,
+                    }
+                # Right leg landmarks
+                if len(landmarks) > 30:
+                    frame_landmarks['right'] = {
+                        'knee': [landmarks[26].x, landmarks[26].y] if landmarks[26].visibility > 0.5 else None,
+                        'ankle': [landmarks[28].x, landmarks[28].y] if landmarks[28].visibility > 0.5 else None,
+                        'heel': [landmarks[30].x, landmarks[30].y] if landmarks[30].visibility > 0.5 else None,
+                    }
+                # Hip landmarks for biological vertical
+                if len(landmarks) > 24:
+                    frame_landmarks['hips'] = {
+                        'left': [landmarks[23].x, landmarks[23].y] if landmarks[23].visibility > 0.5 else None,
+                        'right': [landmarks[24].x, landmarks[24].y] if landmarks[24].visibility > 0.5 else None,
+                    }
+            except:
+                pass
+        
         frame_data_list.append({
             'frame': frame_count,
             'left_angle': current_left_angle,
             'right_angle': current_right_angle,
             'left_in_contact': in_contact_left,
-            'right_in_contact': in_contact_right
+            'right_in_contact': in_contact_right,
+            'landmarks': frame_landmarks,
+            'frame_width': frame_width,
+            'frame_height': frame_height
         })
     
     cap.release()
+    
+    # === SIGNAL PROCESSING PIPELINE ===
+    
+    # 1. Confidence-weighted interpolation
+    # Extract angles and confidences
+    left_angles_list = [a[0] for a in left_angles_raw]
+    left_confidences = [a[1] for a in left_angles_raw]
+    right_angles_list = [a[0] for a in right_angles_raw]
+    right_confidences = [a[1] for a in right_angles_raw]
+    
+    # Interpolate low-confidence frames
+    if left_angles_list:
+        left_angles_list = interpolate_low_confidence(left_angles_list, left_confidences, min_confidence=0.7)
+    if right_angles_list:
+        right_angles_list = interpolate_low_confidence(right_angles_list, right_confidences, min_confidence=0.7)
+    
+    # Filter out None values after interpolation
+    left_angles = [a for a in left_angles_list if a is not None]
+    right_angles = [a for a in right_angles_list if a is not None]
+    
+    # 2. Temporal smoothing (Savitzky-Golay equivalent: weighted moving average)
+    if len(left_angles) >= 5:
+        left_angles = smooth_signal(np.array(left_angles), window_size=5).tolist()
+    if len(right_angles) >= 5:
+        right_angles = smooth_signal(np.array(right_angles), window_size=5).tolist()
+    
+    # 3. Physics-based contact detection (zero-crossing on normalized velocity)
+    # Filter out None values from ankle series
+    left_ankle_valid = [(i, y) for i, y in enumerate(left_ankle_y_series) if y is not None]
+    right_ankle_valid = [(i, y) for i, y in enumerate(right_ankle_y_series) if y is not None]
+    
+    left_contact_events = []
+    right_contact_events = []
+    
+    if len(left_ankle_valid) >= 3:
+        left_y_clean = [y for _, y in left_ankle_valid]
+        left_vel_clean = [left_velocities[i] if i < len(left_velocities) and left_velocities[i] is not None else 0.0 
+                         for i, _ in left_ankle_valid]
+        
+        # Calculate peak-to-peak range for normalization
+        if left_y_clean:
+            left_peak_to_peak = max(left_y_clean) - min(left_y_clean)
+            if left_peak_to_peak > 0.001:
+                # Convert frame indices back to original frame numbers
+                frame_map = {i: frame_idx for i, (frame_idx, _) in enumerate(left_ankle_valid)}
+                contact_events_raw = detect_ground_contact_zero_crossing(
+                    left_y_clean, left_vel_clean, left_peak_to_peak
+                )
+                left_contact_events = [(frame_map[start], frame_map[end]) for start, end in contact_events_raw 
+                                      if start in frame_map and end in frame_map]
+    
+    if len(right_ankle_valid) >= 3:
+        right_y_clean = [y for _, y in right_ankle_valid]
+        right_vel_clean = [right_velocities[i] if i < len(right_velocities) and right_velocities[i] is not None else 0.0 
+                          for i, _ in right_ankle_valid]
+        
+        # Calculate peak-to-peak range for normalization
+        if right_y_clean:
+            right_peak_to_peak = max(right_y_clean) - min(right_y_clean)
+            if right_peak_to_peak > 0.001:
+                # Convert frame indices back to original frame numbers
+                frame_map = {i: frame_idx for i, (frame_idx, _) in enumerate(right_ankle_valid)}
+                contact_events_raw = detect_ground_contact_zero_crossing(
+                    right_y_clean, right_vel_clean, right_peak_to_peak
+                )
+                right_contact_events = [(frame_map[start], frame_map[end]) for start, end in contact_events_raw 
+                                       if start in frame_map and end in frame_map]
+    
+    # Extract foot strikes from contact events
+    left_foot_strikes = [start for start, _ in left_contact_events]
+    right_foot_strikes = [start for start, _ in right_contact_events]
     
     # Calculate ground contact times
     left_gct_times = []
     right_gct_times = []
     
-    # Filter and validate ground contact times for accuracy
+    # Filter and validate ground contact times
     for start_frame, end_frame in left_contact_events:
-        contact_time_ms = (end_frame - start_frame) * frame_time * 1000  # Convert to milliseconds
-        # Filter out noise and unrealistic values
-        # Normal GCT for running: 150-300ms, walking: 500-800ms
-        # Accept range: 50ms to 1000ms (very conservative)
+        contact_time_ms = (end_frame - start_frame) * frame_time * 1000
         if 50 <= contact_time_ms <= 1000:
             left_gct_times.append(contact_time_ms)
     
     for start_frame, end_frame in right_contact_events:
-        contact_time_ms = (end_frame - start_frame) * frame_time * 1000  # Convert to milliseconds
-        # Filter out noise and unrealistic values
+        contact_time_ms = (end_frame - start_frame) * frame_time * 1000
         if 50 <= contact_time_ms <= 1000:
             right_gct_times.append(contact_time_ms)
     
